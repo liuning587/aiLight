@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "python .cursor/hooks/traffic_prompt_hook.py",
+        "matcher": "UserPromptSubmit",
+        "timeout": 20
+      }
+    ]
+  }
+}
+
