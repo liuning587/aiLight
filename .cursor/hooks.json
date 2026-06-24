@@ -1,13 +1,37 @@
 {
   "version": 1,
   "hooks": {
+    "sessionStart": [
+      {
+        "command": "python .cursor/hooks/ailight_hook.py session_start",
+        "timeout": 20
+      }
+    ],
+    "stop": [
+      {
+        "command": "python .cursor/hooks/ailight_hook.py session_stop",
+        "timeout": 20
+      }
+    ],
+    "preToolUse": [
+      {
+        "command": "python .cursor/hooks/ailight_hook.py tool_start",
+        "matcher": "Shell|Write|Task",
+        "timeout": 15
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "python .cursor/hooks/ailight_hook.py tool_failure",
+        "timeout": 20
+      }
+    ],
     "beforeSubmitPrompt": [
       {
-        "command": "python .cursor/hooks/traffic_prompt_hook.py",
+        "command": "python .cursor/hooks/ailight_hook.py prompt",
         "matcher": "UserPromptSubmit",
         "timeout": 20
       }
     ]
   }
 }
-

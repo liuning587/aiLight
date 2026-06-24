@@ -1,0 +1,24 @@
+{
+  "default_timeout": 8.0,
+  "default_device": "lab-main",
+  "devices": {
+    "lab-main": {
+      "name": "aiLight-BD92",
+      "name_prefix": "aiLight",
+      "address": "88:56:A6:60:BD:92",
+      "timeout": 8.0
+    },
+    "lab-a": {
+      "name": "TL-A",
+      "name_prefix": "TL-A",
+      "address": "",
+      "timeout": 8.0
+    },
+    "lab-b": {
+      "name": "TL-B",
+      "name_prefix": "TL-B",
+      "address": "",
+      "timeout": 8.0
+    }
+  }
+}

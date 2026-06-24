@@ -44,8 +44,26 @@ def _adv_payload(name):
     return bytes(payload)
 
 
+def _fmt_mac(mac_bytes):
+    if not mac_bytes:
+        return "UNKNOWN"
+    return ":".join("{:02X}".format(b) for b in mac_bytes)
+
+
+def _get_ble_mac(ble):
+    try:
+        cfg = ble.config("mac")
+    except OSError:
+        return b""
+    if isinstance(cfg, tuple) and len(cfg) >= 2:
+        return cfg[1]
+    if isinstance(cfg, (bytes, bytearray)):
+        return cfg
+    return b""
+
+
 class BleUart:
-    def __init__(self, ble, name="ESP32C3-Traffic"):
+    def __init__(self, ble, name="aiLight"):
         self._ble = ble
         self._ble.active(True)
         self._ble.irq(self._irq)
@@ -247,10 +265,15 @@ def _parse_int(value, default_value):
 
 def main():
     ble = bluetooth.BLE()
-    uart = BleUart(ble, name="ESP32C3-Traffic")
+    ble.active(True)
+    mac_bytes = _get_ble_mac(ble)
+    mac_text = _fmt_mac(mac_bytes)
+    mac_suffix = "".join("{:02X}".format(b) for b in mac_bytes[-2:]) if mac_bytes else "NA"
+    ble_name = "aiLight-{}".format(mac_suffix)
+    uart = BleUart(ble, name=ble_name)
     light = TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True)
     light.set_mode("AUTO")
-    uart.write_line("READY ESP32C3-Traffic")
+    uart.write_line("READY {} MAC={}".format(ble_name, mac_text))
 
     while True:
         cmd = uart.read_line()
@@ -263,7 +286,7 @@ def main():
                 response = (
                     "OK CMDS: MODE <AUTO|MANUAL|FLASH_YELLOW|ALL_OFF>; "
                     "SET <RED|YELLOW|GREEN> <ON|OFF>; "
-                    "BLINK <RED|YELLOW|GREEN> <TIMES> <PERIOD_MS>; STATUS"
+                    "BLINK <RED|YELLOW|GREEN> <TIMES> <PERIOD_MS>; STATUS; MAC"
                 )
             elif parts[0] == "MODE" and len(parts) >= 2:
                 mode = parts[1]
@@ -292,6 +315,8 @@ def main():
                     response = "ERR COLOR"
             elif parts[0] == "STATUS":
                 response = "OK " + light.status()
+            elif parts[0] == "MAC":
+                response = "OK NAME={} MAC={}".format(ble_name, mac_text)
             elif parts[0] == "POLARITY" and len(parts) >= 2:
                 if parts[1] == "HIGH":
                     light.set_polarity(True)
