@@ -1,162 +1,107 @@
-# ESP32-C3 SuperMini 蓝牙三色灯控制（MicroPython + Cursor Hook）
+# ESP32-C3 SuperMini 蓝牙三色灯 + aiLight 守护进程（对标 PromLight）
 
-这个工程让你在 Cursor 里通过自然语言触发 hook，再经 BLE 控制 `ESP32-C3 SuperMini` 上的红黄绿灯模块。
+用 ESP32-C3 + 三色灯模块，把 Cursor Agent 的 **忙 / 思考 / 等待 / 完成 / 出错** 映射到物理灯光。架构参考 [PromLight](https://light.ghostyu.com/ai.txt)。
 
-## 1. 硬件接线（按图里的模块）
+## 架构
 
-你这类 4 线交通灯模块一般是 `R / Y / G / GND`（板上丝印顺序为准），建议接法：
-
-- `GND` -> `ESP32-C3 GND`
-- `R` -> `GPIO4`
-- `Y` -> `GPIO3`
-- `G` -> `GPIO2`
-
-> 当前工程默认按高电平点亮（`active_high=True`）。
-
-## 2. 烧录与运行 MicroPython 固件
-
-先给板子烧好 MicroPython，然后把固件上传为 `main.py`：
-
-```bash
-mpremote connect COMx fs cp firmware/main.py :main.py
-mpremote connect COMx reset
+```
+Cursor Hooks  →  lightd (127.0.0.1:7801)  →  BLE  →  ESP32 (aiLight-XXXX)
+                     ↑
+              Web 控制台 / 状态机 / 超时回落
 ```
 
-板子启动后会广播 BLE 名称：`aiLight-XXXX`（`XXXX` 为 MAC 后两字节，方便多板区分）。
+| 组件 | 说明 |
+|------|------|
+| `firmware/main.py` | 板端 MicroPython + BLE UART |
+| `tools/lightd/` | 本地守护进程（状态聚合、长连接 BLE） |
+| `.cursor/hooks.json` | Cursor 项目 Hook |
+| `config.json` | 守护进程配置（端口、超时、灯效命令） |
+| `devices.json` | 多设备 MAC/名称绑定 |
 
-## 3. 电脑端依赖安装
+## 一键安装（Windows）
 
-```bash
-pip install -r requirements.txt
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
-## 4. 先手动验证 BLE 控制
+安装后会：
+- 安装 Python 依赖
+- 后台启动 `lightd`
+- 打开控制台 http://127.0.0.1:7801
+
+**然后请：**
+1. 上传固件：`mpremote connect COMx fs cp firmware/main.py :main.py`
+2. 板子上电（BLE 名 `aiLight-XXXX`）
+3. **重启 Cursor**，新开 Agent 对话
+
+## 状态对照 PromLight
+
+| 状态 | 灯效 | 触发 |
+|------|------|------|
+| 空闲 | 全灭 | `sessionStart` / 超时回落 |
+| 思考 | 黄慢闪 `THINK_SLOW` | 你发消息 |
+| 忙碌 | 黄快闪 `FLASH_YELLOW` | Agent 调工具 |
+| 等待 | 红灯常亮 | Shell/MCP 执行前（授权） |
+| 完成 | 绿灯常亮 | Agent 结束（60s 后自动灭） |
+| 出错 | 红灯闪 | 工具失败 |
+
+## 手动命令
 
 ```bash
-python tools/ble_lightctl.py --cmd "STATUS"
-python tools/ble_lightctl.py --cmd "MAC"
-python tools/ble_lightctl.py --cmd "MODE AUTO"
-python tools/ble_lightctl.py --cmd "MODE FLASH_YELLOW"
-python tools/ble_lightctl.py --cmd "SET RED ON"
-python tools/ble_lightctl.py --cmd "BLINK GREEN 6 250"
-```
+# 启动守护进程
+python -m tools.lightd
 
-也可以先扫描附近设备确认 MAC：
+# 测试 Hook / 守护进程
+python .cursor/hooks/ailight_hook.py test
 
-```bash
-python tools/ble_lightctl.py --scan
-python tools/ble_lightctl.py --scan --scan-all
-```
-
-## 4.1 多设备绑定（devices.json）
-
-工程根目录新增 `devices.json`，每台电脑都可以维护自己的映射。脚本支持按设备别名控制：
-
-```bash
-python tools/ble_lightctl.py --list-devices
+# 直接 BLE 控制
 python tools/ble_lightctl.py --device lab-main --cmd "STATUS"
-python tools/ble_lightctl.py --device lab-a --cmd "MODE AUTO"
-python tools/ble_lightctl.py --device lab-b --cmd "MODE FLASH_YELLOW"
+python tools/ble_lightctl.py --scan
+
+# 聊天手动灯控
+# 灯控：黄灯闪 / 灯控：切换自动模式
 ```
 
-`devices.json` 示例结构：
+## 硬件接线
+
+- `GND` → GND
+- `R` → GPIO4
+- `Y` → GPIO3
+- `G` → GPIO2
+
+默认高电平点亮（`active_high=True`）。
+
+## 配置
+
+`config.json`：
 
 ```json
 {
-  "default_timeout": 8.0,
-  "default_device": "lab-main",
-  "devices": {
-    "lab-main": { "name": "aiLight", "name_prefix": "aiLight", "address": "", "timeout": 8.0 },
-    "lab-a": { "name": "TL-A", "address": "", "timeout": 8.0 },
-    "lab-b": { "name": "TL-B", "address": "", "timeout": 8.0 }
+  "web_port": 7801,
+  "done_timeout_sec": 60,
+  "waiting_timeout_sec": 300,
+  "state_commands": {
+    "idle": "MODE ALL_OFF",
+    "thinking": "MODE THINK_SLOW",
+    "busy": "MODE FLASH_YELLOW",
+    "waiting": "MODE WAIT",
+    "done": "MODE DONE",
+    "error": "BLINK RED 6 250"
   }
 }
 ```
 
-说明：
+`devices.json`：每台电脑维护自己的设备表，**建议填写 MAC**。
 
-- 优先建议填 `address`（MAC）做硬绑定，避免同名设备串控。
-- 不填 `address` 时，按 `name` 扫描连接。
-- 不传 `--device` 时默认使用 `default_device`。
+## 常见问题
 
-## 5. Cursor Hook 与 aiLight 关联
+- **Hook 不亮**：先确认 `http://127.0.0.1:7801` 能打开；重启 Cursor
+- **BLE 连不上**：不要占用串口；`mpremote reset` 后重试
+- **空闲红绿同亮**：升级最新固件（`SET` 互斥 + `ALL_OFF` 清状态）
 
-本项目通过 **项目级 Hook** 把 Cursor Agent 和你的红绿灯绑定在一起。
+## 与 PromLight 仍有的差异
 
-### 配置文件
-
-| 文件 | 作用 |
-|------|------|
-| `.cursor/hooks.json` | Hook 事件注册 |
-| `.cursor/hooks/ailight_hook.py` | 统一灯控逻辑 |
-| `.cursor/ailight.json` | Hook 行为配置（默认设备、各阶段命令） |
-| `devices.json` | BLE 设备绑定（MAC / 名称） |
-
-默认已绑定 `lab-main` → `aiLight-BD92`（`88:56:A6:60:BD:92`）。
-
-### 验证 Hook 绑定
-
-```bash
-python .cursor/hooks/ailight_hook.py test
-```
-
-### Agent 自动点灯
-
-| Hook 事件 | 灯态 |
-|-----------|------|
-| `sessionStart` | 黄闪（开始会话） |
-| `preToolUse`（Shell/Write/Task） | 黄闪（正在干活） |
-| `stop` | 自动模式（本轮结束） |
-| `postToolUseFailure` | 红灯闪（工具失败） |
-
-### 手动灯控（聊天里发）
-
-- `灯控：切换自动模式`
-- `灯控：黄灯闪`
-- `灯控：红灯亮`
-- `灯控：查询状态`
-
-也可指定设备：`灯控 lab-a：黄灯闪`
-
-### 启用步骤
-
-1. 板子 USB 上电，确保 `main.py` 在跑（蓝牙名 `aiLight-XXXX`）
-2. **重启 Cursor**（修改 `hooks.json` 后必须重启）
-3. 运行 `python .cursor/hooks/ailight_hook.py test` 确认连通
-
-可选：固定设备别名
-
-```bash
-set AILIGHT_DEVICE=lab-main
-```
-
-## 6. 内置交通灯定义（固件里已实现）
-
-`MODE AUTO` 相位：
-
-1. 红灯常亮 10s
-2. 红+黄 2s
-3. 绿灯常亮 10s
-4. 绿灯闪烁 3s（500ms 周期）
-5. 黄灯常亮 3s
-
-循环执行。
-
-`MODE FLASH_YELLOW`：
-
-- 黄灯持续闪烁（500ms 周期），常用于警示/故障模式。
-
-## 7. 支持的 BLE 指令
-
-- `MODE AUTO|MANUAL|FLASH_YELLOW|ALL_OFF`
-- `SET RED|YELLOW|GREEN ON|OFF`
-- `BLINK RED|YELLOW|GREEN <times> <period_ms>`
-- `STATUS`
-- `MAC`
-- `HELP`
-
-## 8. 常见问题
-
-- 搜不到设备：先确认电脑蓝牙打开，且板子已上电并运行 `main.py`。
-- 连接失败：先重启板子再试；必要时用 `--address` 指定 BLE 地址。
-- 灯不亮：先检查模块是高电平点亮还是低电平点亮，再调整 `active_high`。
+- 无成品硬件/按键/续航管理
+- 仅 Cursor 项目 Hook（未自动配置 Claude/Codex 等）
+- 灯效为三色闪/常亮（无跑马灯）
+- 需自行烧录 MicroPython 固件

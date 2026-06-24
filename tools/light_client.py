@@ -16,7 +16,9 @@ DEFAULT_BLE_NAME = "aiLight"
 
 
 def default_config_path() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "devices.json"))
+    return os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "devices.json")
+    )
 
 
 def load_devices_config(path: Optional[str] = None) -> dict:
@@ -38,9 +40,18 @@ def resolve_device_target(
     devices = config.get("devices") if isinstance(config.get("devices"), dict) else {}
 
     if address or name:
-        return name or DEFAULT_BLE_NAME, address, timeout if timeout is not None else 8.0
+        return (
+            name or DEFAULT_BLE_NAME,
+            address,
+            timeout if timeout is not None else 8.0,
+        )
 
-    alias = (device_alias or os.environ.get("AILIGHT_DEVICE") or config.get("default_device") or "").strip()
+    alias = (
+        device_alias
+        or os.environ.get("AILIGHT_DEVICE")
+        or config.get("default_device")
+        or ""
+    ).strip()
     if alias and alias in devices:
         dev = devices[alias]
         if not isinstance(dev, dict):
@@ -48,14 +59,20 @@ def resolve_device_target(
         dev_name = dev.get("name_prefix") or dev.get("name") or DEFAULT_BLE_NAME
         dev_address = (dev.get("address") or "").strip() or None
         dev_timeout = float(
-            timeout if timeout is not None else dev.get("timeout", config.get("default_timeout", 8.0))
+            timeout
+            if timeout is not None
+            else dev.get("timeout", config.get("default_timeout", 8.0))
         )
         return dev_name, dev_address, dev_timeout
 
     if alias and alias not in devices:
         raise RuntimeError(f'Device alias not found in config: "{alias}"')
 
-    return DEFAULT_BLE_NAME, None, float(timeout if timeout is not None else config.get("default_timeout", 8.0))
+    return (
+        DEFAULT_BLE_NAME,
+        None,
+        float(timeout if timeout is not None else config.get("default_timeout", 8.0)),
+    )
 
 
 def _name_matches(name: str, pattern: str) -> bool:
@@ -63,10 +80,16 @@ def _name_matches(name: str, pattern: str) -> bool:
     low_pattern = (pattern or "").lower()
     if not low_pattern:
         return False
-    return low_name == low_pattern or low_name.startswith(low_pattern + "-") or low_pattern in low_name
+    return (
+        low_name == low_pattern
+        or low_name.startswith(low_pattern + "-")
+        or low_pattern in low_name
+    )
 
 
-async def resolve_device(name: str, address: Optional[str], scan_timeout: float = 8.0) -> str:
+async def resolve_device(
+    name: str, address: Optional[str], scan_timeout: float = 8.0
+) -> str:
     if address:
         return address
 
@@ -79,7 +102,9 @@ async def resolve_device(name: str, address: Optional[str], scan_timeout: float 
         if _name_matches(d.name or "", name):
             return d.address
 
-    devices = await BleakScanner.discover(timeout=scan_timeout, service_uuids=[UART_SERVICE_UUID])
+    devices = await BleakScanner.discover(
+        timeout=scan_timeout, service_uuids=[UART_SERVICE_UUID]
+    )
     for d in devices:
         if d.address:
             return d.address

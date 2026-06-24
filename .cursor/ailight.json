@@ -2,10 +2,7 @@
   "enabled": true,
   "default_device": "lab-main",
   "devices_config": "devices.json",
-  "commands": {
-    "session_start": "MODE FLASH_YELLOW",
-    "session_stop": "MODE AUTO",
-    "tool_start": "MODE FLASH_YELLOW",
-    "tool_failure": "BLINK RED 6 250"
-  }
+  "daemon_host": "127.0.0.1",
+  "daemon_port": 7801,
+  "profile": "promlight"
 }

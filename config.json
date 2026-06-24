@@ -1,0 +1,17 @@
+{
+  "web_port": 7801,
+  "dry_run": false,
+  "done_timeout_sec": 60,
+  "waiting_timeout_sec": 300,
+  "error_display_sec": 4,
+  "default_device": "lab-main",
+  "devices_config": "devices.json",
+  "state_commands": {
+    "idle": "MODE ALL_OFF",
+    "thinking": "MODE THINK_SLOW",
+    "busy": "MODE FLASH_YELLOW",
+    "waiting": "MODE WAIT",
+    "done": "MODE DONE",
+    "error": "BLINK RED 6 250"
+  }
+}

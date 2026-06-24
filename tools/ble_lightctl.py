@@ -75,7 +75,12 @@ async def scan_devices(timeout: float, show_all: bool):
         name = d.name or ""
         if not show_all:
             low = name.lower()
-            if ("ailight" not in low) and ("esp32" not in low) and ("traffic" not in low) and ("tl-" not in low):
+            if (
+                ("ailight" not in low)
+                and ("esp32" not in low)
+                and ("traffic" not in low)
+                and ("tl-" not in low)
+            ):
                 continue
         rows.append((d.address, name))
     rows.sort(key=lambda x: (x[1], x[0]))
@@ -83,15 +88,25 @@ async def scan_devices(timeout: float, show_all: bool):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Control ESP32-C3 traffic light over BLE.")
-    parser.add_argument("--config", default=default_config_path(), help="Devices config JSON path")
-    parser.add_argument("--list-devices", action="store_true", help="List configured devices")
+    parser = argparse.ArgumentParser(
+        description="Control ESP32-C3 traffic light over BLE."
+    )
+    parser.add_argument(
+        "--config", default=default_config_path(), help="Devices config JSON path"
+    )
+    parser.add_argument(
+        "--list-devices", action="store_true", help="List configured devices"
+    )
     parser.add_argument("--scan", action="store_true", help="Scan nearby BLE devices")
-    parser.add_argument("--scan-all", action="store_true", help="Include non-traffic devices in scan")
+    parser.add_argument(
+        "--scan-all", action="store_true", help="Include non-traffic devices in scan"
+    )
     parser.add_argument("--device", default=None, help="Device alias in devices.json")
     parser.add_argument("--name", default=None, help="BLE advertising name or prefix")
     parser.add_argument("--address", default=None, help="BLE MAC/address (optional)")
-    parser.add_argument("--timeout", type=float, default=None, help="BLE connect/response timeout")
+    parser.add_argument(
+        "--timeout", type=float, default=None, help="BLE connect/response timeout"
+    )
     parser.add_argument("--cmd", default=None, help='Raw command, e.g. "MODE AUTO"')
     parser.add_argument("--nl", default=None, help="Natural language command text")
     return parser
@@ -129,7 +144,11 @@ def main() -> int:
         return 0
 
     if args.scan:
-        timeout = args.timeout if args.timeout is not None else float(config.get("default_timeout", 8.0))
+        timeout = (
+            args.timeout
+            if args.timeout is not None
+            else float(config.get("default_timeout", 8.0))
+        )
         rows = asyncio.run(scan_devices(timeout=timeout, show_all=args.scan_all))
         if not rows:
             print("No BLE devices found.")

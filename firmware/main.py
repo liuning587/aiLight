@@ -124,6 +124,7 @@ class TrafficLight:
         self.blink_state = False
         self.last_blink_ms = time.ticks_ms()
         self.blink_remaining = 0
+        self._blink_period_ms = 500
         self._manual_state = {"RED": 0, "YELLOW": 0, "GREEN": 0}
         self.set_all(0, 0, 0)
         self._auto_phases = [
@@ -146,6 +147,9 @@ class TrafficLight:
         self._write_pin(self.green, green)
 
     def set_named(self, color, onoff):
+        if onoff:
+            for key in self._manual_state:
+                self._manual_state[key] = 0
         if color == "RED":
             self._manual_state["RED"] = onoff
         elif color == "YELLOW":
@@ -158,16 +162,42 @@ class TrafficLight:
             self._manual_state["GREEN"],
         )
 
+    def set_only(self, red, yellow, green):
+        self._manual_state["RED"] = red
+        self._manual_state["YELLOW"] = yellow
+        self._manual_state["GREEN"] = green
+        self.set_all(red, yellow, green)
+
+    def _clear_manual(self):
+        for key in self._manual_state:
+            self._manual_state[key] = 0
+
     def set_mode(self, mode):
         self.mode = mode
         self.phase_index = 0
         self.phase_started_ms = time.ticks_ms()
         self.last_blink_ms = time.ticks_ms()
         self.blink_state = False
+        self.blink_remaining = 0
         if mode == "ALL_OFF":
+            self._clear_manual()
             self.set_all(0, 0, 0)
         elif mode == "FLASH_YELLOW":
+            self._clear_manual()
+            self._blink_period_ms = 300
             self.set_all(0, 0, 0)
+        elif mode == "THINK_SLOW":
+            self._clear_manual()
+            self._blink_period_ms = 1000
+            self.set_all(0, 0, 0)
+        elif mode == "WAIT":
+            self.mode = "MANUAL"
+            self.set_only(1, 0, 0)
+            return
+        elif mode == "DONE":
+            self.mode = "MANUAL"
+            self.set_only(0, 0, 1)
+            return
         elif mode == "AUTO":
             self.set_all(1, 0, 0)
         elif mode == "MANUAL":
@@ -179,6 +209,8 @@ class TrafficLight:
 
     def blink(self, color, times, period_ms):
         self.mode = "MANUAL"
+        self._clear_manual()
+        self.set_all(0, 0, 0)
         self.blink_remaining = times * 2
         self.blink_state = False
         self.last_blink_ms = time.ticks_ms()
@@ -215,8 +247,8 @@ class TrafficLight:
                 self.phase_started_ms = now
                 self._apply_auto_phase(self._auto_phases[self.phase_index][0])
 
-        elif self.mode == "FLASH_YELLOW":
-            if time.ticks_diff(now, self.last_blink_ms) >= 500:
+        elif self.mode == "FLASH_YELLOW" or self.mode == "THINK_SLOW":
+            if time.ticks_diff(now, self.last_blink_ms) >= self._blink_period_ms:
                 self.last_blink_ms = now
                 self.blink_state = not self.blink_state
                 self.set_all(0, 1 if self.blink_state else 0, 0)
@@ -227,6 +259,10 @@ class TrafficLight:
                 self.blink_state = not self.blink_state
                 self.blink_remaining -= 1
                 self.set_named(self._blink_color, 1 if self.blink_state else 0)
+                if self.blink_remaining <= 0:
+                    for color in self._manual_state:
+                        self._manual_state[color] = 0
+                    self.set_all(0, 0, 0)
 
     def status(self):
         return (
@@ -249,7 +285,7 @@ class TrafficLight:
             )
         elif self.mode == "ALL_OFF":
             self.set_all(0, 0, 0)
-        elif self.mode == "FLASH_YELLOW":
+        elif self.mode == "FLASH_YELLOW" or self.mode == "THINK_SLOW":
             self.set_all(0, 0, 0)
         elif self.mode == "AUTO":
             phase_name, _ = self._auto_phases[self.phase_index]
@@ -272,7 +308,7 @@ def main():
     ble_name = "aiLight-{}".format(mac_suffix)
     uart = BleUart(ble, name=ble_name)
     light = TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True)
-    light.set_mode("AUTO")
+    light.set_mode("ALL_OFF")
     uart.write_line("READY {} MAC={}".format(ble_name, mac_text))
 
     while True:
@@ -284,13 +320,13 @@ def main():
                 response = "ERR EMPTY"
             elif parts[0] == "HELP":
                 response = (
-                    "OK CMDS: MODE <AUTO|MANUAL|FLASH_YELLOW|ALL_OFF>; "
+                    "OK CMDS: MODE <AUTO|MANUAL|FLASH_YELLOW|THINK_SLOW|ALL_OFF|WAIT|DONE>; "
                     "SET <RED|YELLOW|GREEN> <ON|OFF>; "
                     "BLINK <RED|YELLOW|GREEN> <TIMES> <PERIOD_MS>; STATUS; MAC"
                 )
             elif parts[0] == "MODE" and len(parts) >= 2:
                 mode = parts[1]
-                if mode in ("AUTO", "MANUAL", "FLASH_YELLOW", "ALL_OFF"):
+                if mode in ("AUTO", "MANUAL", "FLASH_YELLOW", "THINK_SLOW", "ALL_OFF", "WAIT", "DONE"):
                     light.set_mode(mode)
                     response = "OK MODE {}".format(mode)
                 else:

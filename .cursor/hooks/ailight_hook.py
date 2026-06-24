@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
 """
-Unified Cursor hook for aiLight traffic light control.
+Cursor hook -> aiLight daemon (lightd).
 
-Usage:
-  python .cursor/hooks/ailight_hook.py session_start
-  python .cursor/hooks/ailight_hook.py session_stop
-  python .cursor/hooks/ailight_hook.py tool_start
-  python .cursor/hooks/ailight_hook.py tool_failure
-  python .cursor/hooks/ailight_hook.py prompt      # reads JSON from stdin
-  python .cursor/hooks/ailight_hook.py test        # verify binding
+Forwards lifecycle events to http://127.0.0.1:7801/api/event
+Falls back to direct BLE if daemon is unavailable.
 """
 
 from __future__ import annotations
@@ -17,56 +12,110 @@ import json
 import os
 import re
 import sys
+import urllib.error
+import urllib.request
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from tools.light_client import load_devices_config, send_command  # noqa: E402
+from tools.light_client import send_command  # noqa: E402
 
 HOOK_CONFIG_PATH = os.path.join(PROJECT_ROOT, ".cursor", "ailight.json")
+CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
+
+# Maps hook argv[1] -> daemon event name
+ACTION_EVENTS = {
+    "session_start": "session_start",
+    "session_stop": "session_stop",
+    "user_prompt": "user_prompt",
+    "tool_start": "tool_start",
+    "tool_success": "tool_success",
+    "permission_wait": "permission_wait",
+    "permission_done": "permission_done",
+    "tool_failure": "tool_failure",
+    "force_idle": "force_idle",
+}
 
 
-def _load_hook_config() -> dict:
-    if not os.path.exists(HOOK_CONFIG_PATH):
-        return {"enabled": True, "default_device": "lab-main"}
-    with open(HOOK_CONFIG_PATH, "r", encoding="utf-8") as f:
+def _load_json(path: str) -> dict:
+    if not os.path.exists(path):
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return data if isinstance(data, dict) else {}
 
 
-def _devices_config_path(hook_cfg: dict) -> str:
-    rel = hook_cfg.get("devices_config", "devices.json")
-    return rel if os.path.isabs(rel) else os.path.join(PROJECT_ROOT, rel)
+def _daemon_url() -> str:
+    hook_cfg = _load_json(HOOK_CONFIG_PATH)
+    cfg = _load_json(CONFIG_PATH)
+    port = int(hook_cfg.get("daemon_port") or cfg.get("web_port") or 7801)
+    host = hook_cfg.get("daemon_host") or "127.0.0.1"
+    return f"http://{host}:{port}/api/event"
 
 
-def _resolve_device_alias(hook_cfg: dict, override: str | None = None) -> str | None:
-    if override:
-        return override
-    env_alias = os.environ.get("AILIGHT_DEVICE", "").strip()
-    if env_alias:
-        return env_alias
-    hook_alias = (hook_cfg.get("default_device") or "").strip()
-    if hook_alias:
-        return hook_alias
-    devices_cfg = load_devices_config(_devices_config_path(hook_cfg))
-    return (devices_cfg.get("default_device") or "").strip() or None
-
-
-def _allow(extra: dict | None = None) -> None:
+def _allow(extra: dict | None = None, notify: bool = False) -> None:
     payload = {"permission": "allow"}
-    if extra:
+    if extra and notify:
         payload.update(extra)
     print(json.dumps(payload, ensure_ascii=False))
 
 
-def _run_ble(command: str, device_alias: str | None = None) -> tuple[int, str, str]:
-    hook_cfg = _load_hook_config()
-    if not hook_cfg.get("enabled", True):
-        return 0, "DISABLED", ""
-    alias = _resolve_device_alias(hook_cfg, override=device_alias)
-    config_path = _devices_config_path(hook_cfg)
-    return send_command(command, device_alias=alias, config_path=config_path)
+def _post_daemon(event: str) -> tuple[bool, str]:
+    body = json.dumps({"event": event}).encode("utf-8")
+    req = urllib.request.Request(
+        _daemon_url(),
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("ok"):
+            return True, data.get("ble_message") or data.get("phase") or "ok"
+        return False, data.get("ble_message") or "daemon error"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as ex:
+        return False, str(ex)
+
+
+def _fallback_ble(event: str) -> tuple[bool, str]:
+    hook_cfg = _load_json(HOOK_CONFIG_PATH)
+    cfg = _load_json(CONFIG_PATH)
+    commands = cfg.get("state_commands") or hook_cfg.get("commands") or {}
+    phase_map = {
+        "session_start": "idle",
+        "user_prompt": "thinking",
+        "tool_start": "busy",
+        "tool_success": "thinking",
+        "permission_wait": "waiting",
+        "permission_done": "thinking",
+        "session_stop": "done",
+        "tool_failure": "error",
+        "force_idle": "idle",
+    }
+    phase = phase_map.get(event)
+    if not phase or event in ("tool_success", "permission_done"):
+        return True, "skip fallback"
+    cmd = commands.get(phase)
+    if not cmd:
+        return False, f"no fallback command for {phase}"
+    alias = os.environ.get("AILIGHT_DEVICE") or hook_cfg.get("default_device")
+    code, out, err = send_command(cmd, device_alias=alias)
+    return code == 0, out or err
+
+
+def _dispatch(event: str) -> int:
+    ok, msg = _post_daemon(event)
+    if not ok:
+        ok2, msg2 = _fallback_ble(event)
+        if not ok2 and event not in ("tool_success", "permission_done"):
+            _allow(
+                {"user_message": f"aiLight 离线: {msg} | fallback: {msg2}"}, notify=True
+            )
+            return 0
+    _allow()
+    return 0
 
 
 def _read_stdin_json() -> dict:
@@ -95,88 +144,66 @@ def _extract_prompt(payload: dict) -> str:
 
 
 def _parse_device_from_prompt(text: str) -> str | None:
-    s = text.lower()
-    m = re.search(r"(?:灯控|/light)\s*([a-z0-9_-]+)", s)
+    m = re.search(r"(?:灯控|/light)\s*([a-z0-9_-]+)", text.lower())
     return m.group(1) if m else None
 
 
-def _parse_prompt_command(text: str) -> str | None:
+def _parse_manual_command(text: str) -> str | None:
     s = text.lower()
     if not ("灯控" in s or "/light" in s or "ailight" in s):
         return None
-    if "自动" in s or "auto" in s:
-        return "MODE AUTO"
-    if "黄闪" in s or "警示" in s or "flash" in s:
-        return "MODE FLASH_YELLOW"
-    if "全灭" in s or "all off" in s:
-        return "MODE ALL_OFF"
-    if "状态" in s or "status" in s:
-        return "STATUS"
-    if "mac" in s:
-        return "MAC"
-    if re.search(r"(红灯亮|red on)", s):
-        return "SET RED ON"
-    if re.search(r"(红灯灭|red off)", s):
-        return "SET RED OFF"
-    if re.search(r"(黄灯亮|yellow on)", s):
-        return "SET YELLOW ON"
-    if re.search(r"(黄灯灭|yellow off)", s):
-        return "SET YELLOW OFF"
-    if re.search(r"(绿灯亮|green on)", s):
-        return "SET GREEN ON"
-    if re.search(r"(绿灯灭|green off)", s):
-        return "SET GREEN OFF"
-    if re.search(r"(红灯闪)", s):
-        return "BLINK RED 6 250"
-    if re.search(r"(黄灯闪)", s):
-        return "BLINK YELLOW 6 250"
-    if re.search(r"(绿灯闪)", s):
-        return "BLINK GREEN 6 250"
+    mapping = {
+        "auto": "MODE AUTO",
+        "自动": "MODE AUTO",
+        "flash": "MODE FLASH_YELLOW",
+        "黄闪": "MODE FLASH_YELLOW",
+        "all off": "MODE ALL_OFF",
+        "全灭": "MODE ALL_OFF",
+        "status": "STATUS",
+        "状态": "STATUS",
+        "mac": "MAC",
+    }
+    for k, v in mapping.items():
+        if k in s:
+            return v
+    for pat, cmd in [
+        (r"(红灯亮|red on)", "SET RED ON"),
+        (r"(红灯灭|red off)", "SET RED OFF"),
+        (r"(黄灯亮|yellow on)", "SET YELLOW ON"),
+        (r"(黄灯灭|yellow off)", "SET YELLOW OFF"),
+        (r"(绿灯亮|green on)", "SET GREEN ON"),
+        (r"(绿灯灭|green off)", "SET GREEN OFF"),
+        (r"红灯闪", "BLINK RED 6 250"),
+        (r"黄灯闪", "BLINK YELLOW 6 250"),
+        (r"绿灯闪", "BLINK GREEN 6 250"),
+    ]:
+        if re.search(pat, s):
+            return cmd
     return None
-
-
-def _handle_agent_action(action: str) -> int:
-    hook_cfg = _load_hook_config()
-    commands = hook_cfg.get("commands") if isinstance(hook_cfg.get("commands"), dict) else {}
-    command = commands.get(action)
-    if not command:
-        _allow()
-        return 0
-
-    alias = _resolve_device_alias(hook_cfg)
-    code, out, err = _run_ble(command, device_alias=alias)
-    if code == 0:
-        _allow({"user_message": f"aiLight[{action}] {command} | {out}"})
-    else:
-        _allow({"user_message": f"aiLight[{action}] 失败: {err or out}"})
-    return 0
 
 
 def _handle_prompt() -> int:
     payload = _read_stdin_json()
     prompt = _extract_prompt(payload)
-    command = _parse_prompt_command(prompt)
-    if not command:
-        _allow()
+    manual = _parse_manual_command(prompt)
+    if manual:
+        alias = _parse_device_from_prompt(prompt)
+        code, out, err = send_command(manual, device_alias=alias)
+        if code == 0:
+            _allow({"user_message": f"aiLight: {manual} | {out}"}, notify=True)
+        else:
+            _allow({"user_message": f"aiLight 失败: {err or out}"}, notify=True)
         return 0
-
-    device_alias = _parse_device_from_prompt(prompt)
-    code, out, err = _run_ble(command, device_alias=device_alias)
-    if code == 0:
-        _allow({"user_message": f"aiLight 灯控: {command} | {out}"})
-    else:
-        _allow({"user_message": f"aiLight 灯控失败: {command} | {err or out}"})
-    return 0
+    return _dispatch("user_prompt")
 
 
 def _handle_test() -> int:
-    hook_cfg = _load_hook_config()
-    alias = _resolve_device_alias(hook_cfg)
-    code, out, err = _run_ble("STATUS", device_alias=alias)
-    if code == 0:
-        print(f"OK device={alias} | {out}")
+    ok, msg = _post_daemon("force_idle")
+    if ok:
+        print(f"OK daemon | {msg}")
         return 0
-    print(f"FAIL device={alias} | {err or out}")
+    print(f"FAIL daemon | {msg}")
+    print("Tip: start daemon with: python -m tools.lightd")
     return 1
 
 
@@ -186,8 +213,9 @@ def main() -> int:
         return _handle_prompt()
     if action == "test":
         return _handle_test()
-    if action:
-        return _handle_agent_action(action)
+    event = ACTION_EVENTS.get(action)
+    if event:
+        return _dispatch(event)
     _allow()
     return 0
 

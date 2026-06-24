@@ -1,2 +1,4 @@
 tools/__pycache__
 .cursor/hooks/__pycache__
+tools/lightd/__pycache__
+.cursor/.ailight_state.json
