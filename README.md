@@ -29,6 +29,8 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 - 后台启动 `lightd`
 - 打开控制台 http://127.0.0.1:7801
 
+**首次使用：** 在控制台点击 **「扫描附近设备」** → **「绑定并使用」**，无需手改 `devices.json`。
+
 **然后请：**
 1. 上传固件：`mpremote connect COMx fs cp firmware/main.py :main.py`
 2. 板子上电（BLE 名 `aiLight-XXXX`）

@@ -21,6 +21,60 @@ def default_config_path() -> str:
     )
 
 
+def save_devices_config(path: str, cfg: dict) -> None:
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+AILIGHT_NAME_KEYWORDS = ("ailight", "esp32", "traffic", "tl-")
+
+
+def is_probable_ailight(name: str) -> bool:
+    low = (name or "").lower()
+    return any(k in low for k in AILIGHT_NAME_KEYWORDS)
+
+
+async def scan_ailight_devices(
+    timeout: float = 8.0, show_all: bool = False
+) -> list[dict]:
+    """Discover nearby BLE devices; prefer aiLight boards."""
+    raw = await BleakScanner.discover(timeout=timeout)
+    by_addr: dict[str, dict] = {}
+    for d in raw:
+        name = d.name or ""
+        if not show_all and not is_probable_ailight(name):
+            continue
+        rssi = getattr(d, "rssi", None)
+        entry = {
+            "address": d.address,
+            "name": name or "(未命名)",
+            "rssi": rssi,
+        }
+        prev = by_addr.get(d.address)
+        if not prev or (rssi is not None and (prev.get("rssi") or -999) < rssi):
+            by_addr[d.address] = entry
+
+    if not by_addr and not show_all:
+        uart_devices = await BleakScanner.discover(
+            timeout=min(timeout, 6.0), service_uuids=[UART_SERVICE_UUID]
+        )
+        for d in uart_devices:
+            if d.address:
+                by_addr[d.address] = {
+                    "address": d.address,
+                    "name": d.name or "UART 设备",
+                    "rssi": getattr(d, "rssi", None),
+                }
+
+    rows = list(by_addr.values())
+    rows.sort(
+        key=lambda x: (-(x.get("rssi") or -999), x.get("name") or "", x["address"])
+    )
+    return rows
+
+
 def load_devices_config(path: Optional[str] = None) -> dict:
     path = path or default_config_path()
     if not os.path.exists(path):

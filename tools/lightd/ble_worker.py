@@ -16,6 +16,7 @@ from tools.light_client import (
     load_devices_config,
     resolve_device,
     resolve_device_target,
+    scan_ailight_devices,
 )
 
 
@@ -100,6 +101,30 @@ class BleSession:
         async with self._lock:
             await self._disconnect()
 
+    def set_device_alias(self, alias: str | None) -> None:
+        self.device_alias = alias
+        self._address = None
+
+    async def scan_nearby(
+        self, timeout: float = 8.0, show_all: bool = False, reconnect: bool = True
+    ) -> list[dict]:
+        async with self._lock:
+            await self._disconnect()
+            self._address = None
+            results = await scan_ailight_devices(timeout=timeout, show_all=show_all)
+            if reconnect:
+                try:
+                    await self.ensure_connected()
+                except Exception:
+                    pass
+            return results
+
+    async def reconnect(self) -> None:
+        async with self._lock:
+            await self._disconnect()
+            self._address = None
+            await self.ensure_connected()
+
 
 class BleWorker:
     def __init__(self, device_alias: str | None = None, config_path: str | None = None):
@@ -140,6 +165,41 @@ class BleWorker:
         )
         self._ready.set()
         self._loop.run_forever()
+
+    def scan(
+        self, timeout: float = 8.0, show_all: bool = False
+    ) -> tuple[bool, list[dict] | str]:
+        if not self._loop:
+            self.start()
+        assert self._loop is not None and self._session is not None
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.scan_nearby(timeout=timeout, show_all=show_all),
+            self._loop,
+        )
+        try:
+            rows = future.result(timeout=timeout + 12.0)
+            return True, rows
+        except Exception as ex:
+            self._last_error = str(ex)
+            return False, str(ex)
+
+    def switch_device(self, alias: str) -> tuple[bool, str]:
+        if not self._loop:
+            self.start()
+        assert self._loop is not None and self._session is not None
+        self.device_alias = alias
+        self._session.set_device_alias(alias)
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.reconnect(),
+            self._loop,
+        )
+        try:
+            future.result(timeout=15.0)
+            self._last_error = ""
+            return True, "connected"
+        except Exception as ex:
+            self._last_error = str(ex)
+            return False, str(ex)
 
     def send(self, command: str, timeout: float = 3.0) -> tuple[bool, str]:
         if not self._loop:

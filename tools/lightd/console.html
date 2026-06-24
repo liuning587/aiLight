@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>aiLight 控制台</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --card: #151d28;
+      --border: #243044;
+      --text: #e8eef5;
+      --muted: #8b98a5;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --ok: #22c55e;
+      --warn: #eab308;
+      --err: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      margin: 0; padding: 24px;
+      background: var(--bg); color: var(--text);
+      max-width: 720px; margin-inline: auto;
+    }
+    h1 { margin: 0 0 4px; font-size: 1.6rem; }
+    .sub { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+    .card {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 20px; margin-bottom: 16px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 1.1rem; }
+    .hero { text-align: center; padding: 8px 0 4px; }
+    .hero p { color: var(--muted); margin: 0 0 16px; line-height: 1.5; }
+    .btn {
+      border: 0; border-radius: 8px; padding: 10px 16px;
+      font-size: 0.95rem; cursor: pointer; font-weight: 600;
+    }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--primary); color: #fff;
+      width: 100%; padding: 14px; font-size: 1.05rem;
+    }
+    .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }
+    .btn-sm { padding: 6px 12px; font-size: 0.85rem; font-weight: 500; }
+    .btn-ok { background: var(--ok); color: #052e16; }
+    .btn-warn { background: var(--warn); color: #422006; }
+    .btn-err { background: var(--err); color: #fff; }
+    .btn-ghost { background: #243044; color: var(--text); }
+    .current-device {
+      display: flex; align-items: center; gap: 12px;
+      padding: 14px; background: #0f1419; border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+    .dot.off { background: var(--err); }
+    .device-meta { flex: 1; min-width: 0; }
+    .device-meta .name { font-weight: 700; font-size: 1.05rem; }
+    .device-meta .addr { color: var(--muted); font-size: 0.85rem; font-family: monospace; }
+    .scan-list { list-style: none; padding: 0; margin: 12px 0 0; }
+    .scan-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px; border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 8px; background: #0f1419;
+    }
+    .scan-item .info { flex: 1; min-width: 0; }
+    .scan-item .title { font-weight: 600; }
+    .scan-item .mac { font-size: 0.8rem; color: var(--muted); font-family: monospace; }
+    .badge {
+      font-size: 0.7rem; padding: 2px 8px; border-radius: 99px;
+      background: #243044; color: var(--muted);
+    }
+    .badge.bound { background: #14532d; color: #86efac; }
+    .saved-list { list-style: none; padding: 0; margin: 0; }
+    .saved-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .saved-item:last-child { border-bottom: 0; }
+    .phase { font-size: 1.6rem; font-weight: 700; }
+    .debug-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    .toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: #1e293b; border: 1px solid var(--border);
+      padding: 12px 20px; border-radius: 8px; z-index: 99;
+      opacity: 0; transition: opacity 0.25s; pointer-events: none;
+      max-width: 90vw; text-align: center;
+    }
+    .toast.show { opacity: 1; }
+    .empty { color: var(--muted); text-align: center; padding: 16px; font-size: 0.9rem; }
+    .hint { color: var(--muted); font-size: 0.82rem; margin-top: 10px; line-height: 1.45; }
+    .spinner { display: inline-block; width: 16px; height: 16px;
+      border: 2px solid #fff3; border-top-color: #fff;
+      border-radius: 50%; animation: spin 0.7s linear infinite;
+      vertical-align: middle; margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    details summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>aiLight 控制台</h1>
+  <p class="sub">扫描 · 绑定 · 调试 — 开箱即用</p>
+
+  <div class="card">
+    <h2>当前设备</h2>
+    <div class="current-device" id="currentBox">
+      <div class="dot off" id="connDot"></div>
+      <div class="device-meta">
+        <div class="name" id="curName">加载中…</div>
+        <div class="addr" id="curAddr"></div>
+      </div>
+      <button class="btn btn-sm btn-ghost" id="testBtn" onclick="testCurrent()">测试连接</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="hero">
+      <h2>添加 aiLight</h2>
+      <p>请确认板子已上电（USB 供电），电脑蓝牙已开启，<br/>然后点击下方按钮扫描并一键绑定。</p>
+      <button class="btn btn-primary" id="scanBtn" onclick="startScan()">扫描附近设备</button>
+    </div>
+    <p class="hint">💡 设备广播名通常为 <strong>aiLight-XXXX</strong>（XXXX 为 MAC 后四位）。绑定后会自动设为默认设备并同步 Cursor Hook。</p>
+    <ul class="scan-list" id="scanList"></ul>
+    <div class="empty" id="scanEmpty" style="display:none">未发现 aiLight，请确认板子已上电且未被其他程序占用蓝牙。</div>
+  </div>
+
+  <div class="card">
+    <h2>已绑定设备</h2>
+    <ul class="saved-list" id="savedList"></ul>
+    <div class="empty" id="savedEmpty" style="display:none">暂无绑定，请先扫描添加。</div>
+  </div>
+
+  <details class="card">
+    <summary>灯效调试 &amp; 状态</summary>
+    <div style="margin-top:12px">
+      <div>当前灯态：<span class="phase" id="phase">-</span></div>
+      <p class="hint" id="detail" style="margin-top:4px"></p>
+      <div class="debug-btns" style="margin-top:12px">
+        <button class="btn btn-sm btn-warn" onclick="ev('thinking')">思考·黄慢闪</button>
+        <button class="btn btn-sm btn-warn" onclick="ev('busy')">忙碌·黄快闪</button>
+        <button class="btn btn-sm btn-err" onclick="ev('waiting')">等待·红灯</button>
+        <button class="btn btn-sm btn-ok" onclick="ev('session_stop')">完成·绿灯</button>
+        <button class="btn btn-sm btn-err" onclick="ev('tool_failure')">出错·红闪</button>
+        <button class="btn btn-sm btn-ghost" onclick="ev('force_idle')">空闲·全灭</button>
+      </div>
+    </div>
+  </details>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let scanning = false;
+
+    function toast(msg, ms = 2800) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      setTimeout(() => el.classList.remove('show'), ms);
+    }
+
+    async function api(path, opts = {}) {
+      const r = await fetch(path, opts);
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || '请求失败');
+      return j;
+    }
+
+    function renderCurrent(data) {
+      const active = data.active;
+      const ble = data.ble || {};
+      const dot = document.getElementById('connDot');
+      if (active) {
+        document.getElementById('curName').textContent = active.name || active.alias;
+        document.getElementById('curAddr').textContent =
+          active.alias + ' · ' + (active.address || '无 MAC');
+        dot.className = 'dot ' + (ble.connected ? 'on' : 'off');
+      } else {
+        document.getElementById('curName').textContent = '未绑定设备';
+        document.getElementById('curAddr').textContent = '请先扫描并绑定 aiLight';
+        dot.className = 'dot off';
+      }
+    }
+
+    function renderSaved(data) {
+      const list = document.getElementById('savedList');
+      const empty = document.getElementById('savedEmpty');
+      const devices = data.devices || [];
+      if (!devices.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      list.innerHTML = devices.map(d => `
+        <li class="saved-item">
+          <div class="device-meta">
+            <div class="name">${esc(d.name || d.alias)} ${d.is_default ? '<span class="badge">默认</span>' : ''}</div>
+            <div class="addr">${esc(d.alias)} · ${esc(d.address)}</div>
+          </div>
+          ${d.is_active ? '<span class="badge bound">使用中</span>' : `<button class="btn btn-sm btn-ghost" onclick="activate('${esc(d.alias)}')">切换</button>`}
+          ${!d.is_default ? `<button class="btn btn-sm btn-ghost" onclick="removeDevice('${esc(d.alias)}')">删除</button>` : ''}
+        </li>
+      `).join('');
+    }
+
+    function renderScan(devices) {
+      const list = document.getElementById('scanList');
+      const empty = document.getElementById('scanEmpty');
+      if (!devices.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      list.innerHTML = devices.map(d => `
+        <li class="scan-item">
+          <div class="info">
+            <div class="title">${esc(d.name)}</div>
+            <div class="mac">${esc(d.address)}${d.rssi != null ? ' · 信号 ' + d.rssi + ' dBm' : ''}</div>
+          </div>
+          ${d.already_bound ? '<span class="badge bound">已绑定</span><button class="btn btn-sm btn-ghost" onclick="activateByAddr(\'' + esc(d.address) + '\')">切换使用</button>' :
+            '<button class="btn btn-sm btn-ok" onclick="bindDevice(\'' + esc(d.address) + '\',\'' + esc(d.name) + '\')">绑定并使用</button>'}
+        </li>
+      `).join('');
+    }
+
+    function esc(s) {
+      return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;');
+    }
+
+    async function refresh() {
+      try {
+        const status = await api('/api/status');
+        document.getElementById('phase').textContent = status.phase || '-';
+        document.getElementById('detail').textContent =
+          'BLE ' + (status.ble_ok ? '正常' : '异常') + ' · ' + (status.ble_message || '');
+        const dev = await api('/api/devices');
+        renderCurrent({ active: dev.active, ble: status.ble });
+        renderSaved(dev);
+      } catch (e) {
+        toast('无法连接守护进程，请运行: python -m tools.lightd');
+      }
+    }
+
+    async function startScan() {
+      if (scanning) return;
+      scanning = true;
+      const btn = document.getElementById('scanBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>正在扫描（约 8 秒）…';
+      document.getElementById('scanEmpty').style.display = 'none';
+      try {
+        const res = await api('/api/devices/scan', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ timeout: 8 })
+        });
+        renderScan(res.devices || []);
+        if ((res.devices || []).length) {
+          toast('发现 ' + res.devices.length + ' 台设备');
+        } else {
+          toast('未发现设备，请检查板子是否上电');
+        }
+        await refresh();
+      } catch (e) {
+        toast('扫描失败: ' + e.message);
+      } finally {
+        scanning = false;
+        btn.disabled = false;
+        btn.textContent = '扫描附近设备';
+      }
+    }
+
+    async function bindDevice(address, name) {
+      toast('正在绑定…');
+      try {
+        const res = await api('/api/devices/bind', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ address, name, set_default: true, run_test: true })
+        });
+        toast('绑定成功 · ' + res.alias + (res.test ? ' · ' + res.test : ''));
+        await refresh();
+        await startScan();
+      } catch (e) {
+        toast('绑定失败: ' + e.message);
+      }
+    }
+
+    async function activate(alias) {
+      try {
+        await api('/api/devices/activate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ alias })
+        });
+        toast('已切换到 ' + alias);
+        await refresh();
+      } catch (e) {
+        toast(e.message);
+      }
+    }
+
+    async function activateByAddr(address) {
+      try {
+        const dev = await api('/api/devices');
+        const found = (dev.devices || []).find(d => d.address.toUpperCase() === address.toUpperCase());
+        if (found) await activate(found.alias);
+      } catch (e) { toast(e.message); }
+    }
+
+    async function removeDevice(alias) {
+      if (!confirm('确定删除设备 ' + alias + '？')) return;
+      try {
+        await api('/api/devices/' + encodeURIComponent(alias), { method: 'DELETE' });
+        toast('已删除');
+        await refresh();
+      } catch (e) { toast(e.message); }
+    }
+
+    async function testCurrent() {
+      try {
+        const res = await api('/api/devices/test', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+        toast(res.ok ? '连接正常: ' + (res.response || '') : '连接失败: ' + (res.error || ''));
+        await refresh();
+      } catch (e) { toast(e.message); }
+    }
+
+    async function ev(name) {
+      await api('/api/event', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ event: name })
+      });
+      await refresh();
+    }
+
+    refresh();
+    setInterval(refresh, 3000);
+  </script>
+</body>
+</html>

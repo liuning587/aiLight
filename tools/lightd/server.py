@@ -10,9 +10,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 from tools.lightd.ble_worker import BleWorker
+from tools.lightd.devices_store import (
+    bind_device,
+    delete_device,
+    list_devices_summary,
+    set_default_everywhere,
+)
 from tools.lightd.state_machine import StateMachine
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+HOOK_CONFIG_PATH = os.path.join(PROJECT_ROOT, ".cursor", "ailight.json")
+_CONSOLE_HTML_PATH = os.path.join(os.path.dirname(__file__), "console.html")
 
 
 def _config_path() -> str:
@@ -33,65 +41,9 @@ def save_config(cfg: dict) -> None:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
 
-WEB_HTML = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8"/>
-  <title>aiLight Console</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 24px; background: #0f1419; color: #e7ecf3; }
-    h1 { margin-bottom: 4px; }
-    .sub { color: #8b98a5; margin-bottom: 20px; }
-    .card { background: #1a2332; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    .phase { font-size: 28px; font-weight: 700; }
-    button { margin: 4px; padding: 8px 12px; border: 0; border-radius: 6px; cursor: pointer; }
-    .ok { background: #1f8b4c; color: white; }
-    .warn { background: #c9a227; color: #111; }
-    .err { background: #c0392b; color: white; }
-    pre { background: #0b1017; padding: 12px; border-radius: 8px; overflow: auto; }
-  </style>
-</head>
-<body>
-  <h1>aiLight Console</h1>
-  <p class="sub">本地守护进程 · 对标 PromLight 状态机</p>
-  <div class="card">
-    <div>当前状态</div>
-    <div class="phase" id="phase">-</div>
-    <div id="detail"></div>
-  </div>
-  <div class="card">
-    <div>手动测试</div>
-    <button class="warn" onclick="ev('thinking')">思考(黄慢闪)</button>
-    <button class="warn" onclick="ev('tool_start')">忙碌(黄快闪)</button>
-    <button class="err" onclick="ev('permission_wait')">等待(红灯)</button>
-    <button class="ok" onclick="ev('session_stop')">完成(绿灯)</button>
-    <button class="err" onclick="ev('tool_failure')">出错(红闪)</button>
-    <button onclick="ev('force_idle')">空闲(全灭)</button>
-  </div>
-  <div class="card"><pre id="raw">loading...</pre></div>
-  <script>
-    async function refresh() {
-      const r = await fetch('/api/status');
-      const j = await r.json();
-      document.getElementById('phase').textContent = j.phase || '-';
-      document.getElementById('detail').textContent =
-        'event=' + (j.last_event||'') + ' | ble=' + (j.ble_ok?'ok':'fail');
-      document.getElementById('raw').textContent = JSON.stringify(j, null, 2);
-    }
-    async function ev(name) {
-      await fetch('/api/event', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({event: name})
-      });
-      refresh();
-    }
-    refresh();
-    setInterval(refresh, 2000);
-  </script>
-</body>
-</html>
-"""
+def load_console_html() -> str:
+    with open(_CONSOLE_HTML_PATH, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 class Daemon:
@@ -200,7 +152,129 @@ class Daemon:
             data["ble"] = self.ble.status() if not self.dry_run else {}
             data["ble_ok"] = self._last_ble_ok
             data["ble_message"] = self._last_ble_msg
+            data["default_device"] = self.device_alias
             return data
+
+    def devices_payload(self) -> dict:
+        ble = self.ble.status() if not self.dry_run else {}
+        return list_devices_summary(
+            self.devices_config, self.device_alias, ble_status=ble
+        )
+
+    def scan_devices(self, timeout: float = 8.0, show_all: bool = False) -> dict:
+        with self._lock:
+            if self.dry_run:
+                return {"ok": True, "devices": []}
+            ok, result = self.ble.scan(timeout=timeout, show_all=show_all)
+            if not ok:
+                return {"ok": False, "error": result, "devices": []}
+            from tools.light_client import load_devices_config
+
+            cfg = load_devices_config(self.devices_config)
+            devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
+            bound = {
+                (d.get("address") or "").upper()
+                for d in devices.values()
+                if isinstance(d, dict)
+            }
+            for row in result:
+                row["already_bound"] = row["address"].upper() in bound
+            return {"ok": True, "devices": result}
+
+    def bind_and_use(
+        self,
+        address: str,
+        name: str,
+        alias: str | None = None,
+        set_default: bool = True,
+        run_test: bool = True,
+    ) -> dict:
+        with self._lock:
+            new_alias, _ = bind_device(self.devices_config, address, name, alias=alias)
+            if set_default:
+                set_default_everywhere(
+                    new_alias,
+                    self.devices_config,
+                    _config_path(),
+                    HOOK_CONFIG_PATH,
+                )
+                self.device_alias = new_alias
+                self.cfg["default_device"] = new_alias
+            self.sm.state.reset()
+            self.current_phase = "idle"
+
+        switch_ok, switch_msg = True, "dry_run"
+        test_resp = ""
+        if not self.dry_run:
+            switch_ok, switch_msg = self.ble.switch_device(new_alias)
+            if run_test and switch_ok:
+                ok, test_resp = self.ble.send("MAC", timeout=3.0)
+                if ok:
+                    self._last_ble_ok = True
+                    self._last_ble_msg = test_resp
+                self.ble.send("MODE ALL_OFF", timeout=2.0)
+
+        return {
+            "ok": switch_ok,
+            "alias": new_alias,
+            "switch": switch_msg,
+            "test": test_resp,
+        }
+
+    def activate_device(self, alias: str) -> dict:
+        with self._lock:
+            set_default_everywhere(
+                alias,
+                self.devices_config,
+                _config_path(),
+                HOOK_CONFIG_PATH,
+            )
+            self.device_alias = alias
+            self.cfg["default_device"] = alias
+            self.sm.state.reset()
+            self.current_phase = "idle"
+
+        if self.dry_run:
+            return {"ok": True, "alias": alias}
+        ok, msg = self.ble.switch_device(alias)
+        return {"ok": ok, "alias": alias, "message": msg}
+
+    def test_device(self, alias: str | None = None) -> dict:
+        target = alias or self.device_alias
+        if target and target != self.device_alias and not self.dry_run:
+            act = self.activate_device(target)
+            if not act.get("ok"):
+                return {"ok": False, "error": act.get("message", "activate failed")}
+        if self.dry_run:
+            return {"ok": True, "response": "DRY_RUN"}
+        ok, msg = self.ble.send("STATUS", timeout=3.0)
+        self._last_ble_ok = ok
+        self._last_ble_msg = msg
+        return {"ok": ok, "response": msg, "error": "" if ok else msg}
+
+    def remove_device(self, alias: str) -> dict:
+        with self._lock:
+            was_active = alias == self.device_alias
+            delete_device(self.devices_config, alias)
+            from tools.light_client import load_devices_config
+
+            cfg = load_devices_config(self.devices_config)
+            new_default = (cfg.get("default_device") or "").strip()
+            if new_default:
+                set_default_everywhere(
+                    new_default,
+                    self.devices_config,
+                    _config_path(),
+                    HOOK_CONFIG_PATH,
+                )
+                self.device_alias = new_default
+                self.cfg["default_device"] = new_default
+            else:
+                self.device_alias = None
+
+        if was_active and self.device_alias and not self.dry_run:
+            self.ble.switch_device(self.device_alias)
+        return {"ok": True, "default_device": self.device_alias}
 
     def _tick_loop(self) -> None:
         while True:
@@ -227,7 +301,7 @@ def make_handler(daemon: Daemon):
         def do_GET(self):
             path = urlparse(self.path).path
             if path in ("/", "/index.html"):
-                body = WEB_HTML.encode("utf-8")
+                body = load_console_html().encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -239,6 +313,24 @@ def make_handler(daemon: Daemon):
                 return
             if path == "/api/config":
                 self._json(200, load_config())
+                return
+            if path == "/api/devices":
+                self._json(200, daemon.devices_payload())
+                return
+            self._json(404, {"error": "not found"})
+
+        def do_DELETE(self):
+            path = urlparse(self.path).path
+            prefix = "/api/devices/"
+            if path.startswith(prefix):
+                alias = path[len(prefix) :].strip("/")
+                if not alias:
+                    self._json(400, {"error": "alias required"})
+                    return
+                try:
+                    self._json(200, daemon.remove_device(alias))
+                except KeyError:
+                    self._json(404, {"error": "device not found"})
                 return
             self._json(404, {"error": "not found"})
 
@@ -257,6 +349,37 @@ def make_handler(daemon: Daemon):
                     self._json(400, {"error": "event required"})
                     return
                 self._json(200, daemon.handle_event(event))
+                return
+            if path == "/api/devices/scan":
+                timeout = float(payload.get("timeout", 8))
+                show_all = bool(payload.get("show_all", False))
+                self._json(200, daemon.scan_devices(timeout=timeout, show_all=show_all))
+                return
+            if path == "/api/devices/bind":
+                address = (payload.get("address") or "").strip()
+                name = (payload.get("name") or "").strip()
+                if not address:
+                    self._json(400, {"error": "address required"})
+                    return
+                result = daemon.bind_and_use(
+                    address=address,
+                    name=name,
+                    alias=(payload.get("alias") or "").strip() or None,
+                    set_default=bool(payload.get("set_default", True)),
+                    run_test=bool(payload.get("run_test", True)),
+                )
+                self._json(200 if result.get("ok") else 502, result)
+                return
+            if path == "/api/devices/activate":
+                alias = (payload.get("alias") or "").strip()
+                if not alias:
+                    self._json(400, {"error": "alias required"})
+                    return
+                self._json(200, daemon.activate_device(alias))
+                return
+            if path == "/api/devices/test":
+                alias = (payload.get("alias") or "").strip() or None
+                self._json(200, daemon.test_device(alias=alias))
                 return
             if path == "/api/config":
                 cfg = load_config()

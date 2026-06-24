@@ -111,6 +111,19 @@ class StateMachine:
         elif event == "user_prompt":
             self.state.thinking = True
             self.state.done_until = 0.0
+        elif event == "thinking":
+            # Web console manual test button
+            self.state.reset()
+            self.state.thinking = True
+        elif event == "busy":
+            # Web console manual test button
+            self.state.reset()
+            self.state.busy_count = 1
+        elif event == "waiting":
+            # Web console manual test button
+            self.state.reset()
+            self.state.waiting_count = 1
+            self._waiting_deadline = now + self.waiting_timeout_sec
         elif event == "tool_start":
             self.state.thinking = False
             self.state.busy_count += 1
@@ -146,7 +159,14 @@ class StateMachine:
 
         self._touch(event)
         new_phase = self.state.resolve(now)
-        if new_phase == prev and event not in ("tool_start", "permission_wait"):
+        if new_phase == prev and event not in (
+            "tool_start",
+            "permission_wait",
+            "thinking",
+            "busy",
+            "waiting",
+            "force_idle",
+        ):
             return new_phase, "no_change"
         return new_phase, None
 

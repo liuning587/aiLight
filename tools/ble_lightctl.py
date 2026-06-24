@@ -18,11 +18,9 @@ from tools.light_client import (  # noqa: E402
     DEFAULT_BLE_NAME,
     default_config_path,
     load_devices_config,
+    scan_ailight_devices,
     send_command_async,
 )
-from bleak import BleakScanner  # noqa: E402
-
-UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 
 
 def parse_nl_to_cmd(text: str):
@@ -69,22 +67,8 @@ def parse_nl_to_cmd(text: str):
 
 
 async def scan_devices(timeout: float, show_all: bool):
-    devices = await BleakScanner.discover(timeout=timeout)
-    rows = []
-    for d in devices:
-        name = d.name or ""
-        if not show_all:
-            low = name.lower()
-            if (
-                ("ailight" not in low)
-                and ("esp32" not in low)
-                and ("traffic" not in low)
-                and ("tl-" not in low)
-            ):
-                continue
-        rows.append((d.address, name))
-    rows.sort(key=lambda x: (x[1], x[0]))
-    return rows
+    rows = await scan_ailight_devices(timeout=timeout, show_all=show_all)
+    return [(r["address"], r["name"]) for r in rows]
 
 
 def build_parser() -> argparse.ArgumentParser:
