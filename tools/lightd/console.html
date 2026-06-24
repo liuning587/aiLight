@@ -24,8 +24,18 @@
       background: var(--bg); color: var(--text);
       max-width: 720px; margin-inline: auto;
     }
-    h1 { margin: 0 0 4px; font-size: 1.6rem; }
-    .sub { color: var(--muted); margin-bottom: 24px; font-size: 0.95rem; }
+    .topbar {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 12px; margin-bottom: 4px; flex-wrap: wrap;
+    }
+    .topbar-main { flex: 1; min-width: 0; }
+    .topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
+    .nav-link {
+      color: var(--text); text-decoration: none; font-size: 0.9rem; font-weight: 600;
+      padding: 8px 14px; border-radius: 8px; background: #243044;
+    }
+    .nav-link:hover { background: #2d3a50; }
+    .sub { color: var(--muted); font-size: 0.95rem; }
     .card {
       background: var(--card); border: 1px solid var(--border);
       border-radius: 12px; padding: 20px; margin-bottom: 16px;
@@ -97,12 +107,20 @@
       vertical-align: middle; margin-right: 8px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    details summary { cursor: pointer; color: var(--muted); font-weight: 600; }
   </style>
 </head>
 <body>
-  <h1>aiLight 控制台</h1>
-  <p class="sub">扫描 · 绑定 · 调试 — 开箱即用</p>
+  <div class="topbar">
+    <div class="topbar-main">
+      <h1 style="margin:0 0 4px;font-size:1.6rem">aiLight 控制台</h1>
+      <p class="sub" style="margin:0">扫描 · 绑定 · 调试 — 开箱即用</p>
+    </div>
+    <div class="topbar-actions">
+      <a class="nav-link" href="/docs">使用说明</a>
+    </div>
+  </div>
+
+  <div style="margin-bottom:24px"></div>
 
   <div class="card">
     <h2>当前设备</h2>
@@ -113,6 +131,20 @@
         <div class="addr" id="curAddr"></div>
       </div>
       <button class="btn btn-sm btn-ghost" id="testBtn" onclick="testCurrent()">测试连接</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>灯效调试 &amp; 状态</h2>
+    <div>当前灯态：<span class="phase" id="phase">-</span></div>
+    <p class="hint" id="detail" style="margin-top:4px"></p>
+    <div class="debug-btns" style="margin-top:12px">
+      <button class="btn btn-sm btn-warn" onclick="ev('thinking')">思考·黄慢闪</button>
+      <button class="btn btn-sm btn-warn" onclick="ev('busy')">忙碌·黄快闪</button>
+      <button class="btn btn-sm btn-err" onclick="ev('waiting')">等待·红灯</button>
+      <button class="btn btn-sm btn-ok" onclick="ev('session_stop')">完成·绿灯</button>
+      <button class="btn btn-sm btn-err" onclick="ev('tool_failure')">出错·红闪</button>
+      <button class="btn btn-sm btn-ghost" onclick="ev('force_idle')">空闲·全灭</button>
     </div>
   </div>
 
@@ -132,22 +164,6 @@
     <ul class="saved-list" id="savedList"></ul>
     <div class="empty" id="savedEmpty" style="display:none">暂无绑定，请先扫描添加。</div>
   </div>
-
-  <details class="card">
-    <summary>灯效调试 &amp; 状态</summary>
-    <div style="margin-top:12px">
-      <div>当前灯态：<span class="phase" id="phase">-</span></div>
-      <p class="hint" id="detail" style="margin-top:4px"></p>
-      <div class="debug-btns" style="margin-top:12px">
-        <button class="btn btn-sm btn-warn" onclick="ev('thinking')">思考·黄慢闪</button>
-        <button class="btn btn-sm btn-warn" onclick="ev('busy')">忙碌·黄快闪</button>
-        <button class="btn btn-sm btn-err" onclick="ev('waiting')">等待·红灯</button>
-        <button class="btn btn-sm btn-ok" onclick="ev('session_stop')">完成·绿灯</button>
-        <button class="btn btn-sm btn-err" onclick="ev('tool_failure')">出错·红闪</button>
-        <button class="btn btn-sm btn-ghost" onclick="ev('force_idle')">空闲·全灭</button>
-      </div>
-    </div>
-  </details>
 
   <div class="toast" id="toast"></div>
 

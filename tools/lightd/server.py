@@ -16,14 +16,39 @@ from tools.lightd.devices_store import (
     list_devices_summary,
     set_default_everywhere,
 )
+from tools.lightd.paths import project_root, resource_path
 from tools.lightd.state_machine import StateMachine
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-_CONSOLE_HTML_PATH = os.path.join(os.path.dirname(__file__), "console.html")
+_DOCS_MD_CANDIDATES = ("docs/使用说明.md",)
 
 
 def _config_path() -> str:
-    return os.path.join(PROJECT_ROOT, "config.json")
+    return os.path.join(project_root(), "config.json")
+
+
+def _console_html_path() -> str:
+    bundled = resource_path("tools", "lightd", "console.html")
+    if os.path.isfile(bundled):
+        return bundled
+    return os.path.join(os.path.dirname(__file__), "console.html")
+
+
+def _docs_html_path() -> str:
+    bundled = resource_path("tools", "lightd", "docs.html")
+    if os.path.isfile(bundled):
+        return bundled
+    return os.path.join(os.path.dirname(__file__), "docs.html")
+
+
+def _docs_md_path() -> str | None:
+    for rel in _DOCS_MD_CANDIDATES:
+        bundled = resource_path(*rel.split("/"))
+        if os.path.isfile(bundled):
+            return bundled
+        local = os.path.join(project_root(), *rel.split("/"))
+        if os.path.isfile(local):
+            return local
+    return None
 
 
 def load_config() -> dict:
@@ -41,8 +66,30 @@ def save_config(cfg: dict) -> None:
 
 
 def load_console_html() -> str:
-    with open(_CONSOLE_HTML_PATH, "r", encoding="utf-8") as f:
+    with open(_console_html_path(), "r", encoding="utf-8") as f:
         return f.read()
+
+
+def load_docs_html() -> str:
+    with open(_docs_html_path(), "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def load_docs_markdown() -> tuple[str, str]:
+    path = _docs_md_path()
+    if not path:
+        return (
+            "使用说明",
+            "# 使用说明\n\n未找到 `docs/使用说明.md`，请确认文件存在于 aiLight 项目目录。",
+        )
+    with open(path, "r", encoding="utf-8") as f:
+        text = f.read()
+    title = "使用说明"
+    for line in text.splitlines():
+        if line.startswith("# "):
+            title = line[2:].strip()
+            break
+    return title, text
 
 
 class Daemon:
@@ -60,7 +107,7 @@ class Daemon:
         self.devices_config = (
             devices_cfg
             if os.path.isabs(devices_cfg)
-            else os.path.join(PROJECT_ROOT, devices_cfg)
+            else os.path.join(project_root(), devices_cfg)
         )
         self.ble = BleWorker(
             device_alias=self.device_alias, config_path=self.devices_config
@@ -195,7 +242,7 @@ class Daemon:
                     new_alias,
                     self.devices_config,
                     _config_path(),
-                    PROJECT_ROOT,
+                    project_root(),
                 )
                 self.device_alias = new_alias
                 self.cfg["default_device"] = new_alias
@@ -226,7 +273,7 @@ class Daemon:
                 alias,
                 self.devices_config,
                 _config_path(),
-                PROJECT_ROOT,
+                project_root(),
             )
             self.device_alias = alias
             self.cfg["default_device"] = alias
@@ -264,7 +311,7 @@ class Daemon:
                     new_default,
                     self.devices_config,
                     _config_path(),
-                    PROJECT_ROOT,
+                    project_root(),
                 )
                 self.device_alias = new_default
                 self.cfg["default_device"] = new_default
@@ -306,6 +353,18 @@ def make_handler(daemon: Daemon):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+                return
+            if path in ("/docs", "/help"):
+                body = load_docs_html().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path == "/api/docs":
+                title, content = load_docs_markdown()
+                self._json(200, {"title": title, "content": content})
                 return
             if path == "/api/status":
                 self._json(200, daemon.status())
@@ -395,8 +454,9 @@ class SingleInstanceHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = False
 
 
-def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
+def run_server(host: str | None = None, port: int | None = None) -> None:
     cfg = load_config()
+    host = host or str(cfg.get("web_host", "127.0.0.1"))
     port = port or int(cfg.get("web_port", 7801))
     daemon = Daemon(cfg)
     handler = make_handler(daemon)
@@ -405,7 +465,9 @@ def run_server(host: str = "127.0.0.1", port: int | None = None) -> None:
     except OSError as ex:
         print(f"Port {port} already in use ({ex}). Stop the other lightd first.")
         raise SystemExit(1) from ex
-    print(f"aiLight daemon running at http://{host}:{port}")
+    print(f"aiLight daemon listening on http://{host}:{port}")
+    if host in ("0.0.0.0", "::"):
+        print(f"LAN access: http://<本机IP>:{port}")
     print(f"dry_run={daemon.dry_run} device={daemon.device_alias}")
     try:
         httpd.serve_forever()

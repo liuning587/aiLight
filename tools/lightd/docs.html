@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>aiLight 使用说明</title>
+  <style>
+    :root {
+      --bg: #0b0f14;
+      --card: #151d28;
+      --border: #243044;
+      --text: #e8eef5;
+      --muted: #8b98a5;
+      --primary: #3b82f6;
+      --link: #60a5fa;
+      --code-bg: #0f1419;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      margin: 0; padding: 24px;
+      background: var(--bg); color: var(--text);
+      max-width: 820px; margin-inline: auto;
+      line-height: 1.65;
+    }
+    .topbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 20px; flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 1.5rem; }
+    .btn {
+      border: 0; border-radius: 8px; padding: 8px 14px;
+      font-size: 0.9rem; cursor: pointer; font-weight: 600;
+      background: #243044; color: var(--text); text-decoration: none;
+      display: inline-block;
+    }
+    .btn:hover { background: #2d3a50; }
+    .doc {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 28px 32px;
+    }
+    .doc h1 { font-size: 1.75rem; margin-top: 0; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
+    .doc h2 { font-size: 1.25rem; margin-top: 2em; color: var(--text); }
+    .doc h3 { font-size: 1.05rem; margin-top: 1.5em; }
+    .doc p, .doc li { color: #d1dae6; }
+    .doc a { color: var(--link); }
+    .doc code {
+      background: var(--code-bg); padding: 2px 6px; border-radius: 4px;
+      font-size: 0.88em; font-family: Consolas, monospace;
+    }
+    .doc pre {
+      background: var(--code-bg); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+    }
+    .doc pre code { background: none; padding: 0; }
+    .doc table {
+      width: 100%; border-collapse: collapse; margin: 1em 0;
+      font-size: 0.92rem;
+    }
+    .doc th, .doc td {
+      border: 1px solid var(--border); padding: 8px 10px; text-align: left;
+    }
+    .doc th { background: #0f1419; }
+    .doc blockquote {
+      margin: 1em 0; padding: 10px 16px;
+      border-left: 3px solid var(--primary);
+      background: #0f1419; color: var(--muted);
+    }
+    .doc hr { border: 0; border-top: 1px solid var(--border); margin: 2em 0; }
+    .loading { color: var(--muted); text-align: center; padding: 48px; }
+    .err { color: #f87171; text-align: center; padding: 48px; }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>使用说明</h1>
+    <a class="btn" href="/">← 返回控制台</a>
+  </div>
+  <div class="doc" id="doc">
+    <div class="loading" id="loading">加载中…</div>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    marked.setOptions({ gfm: true, breaks: false });
+
+    function simpleMd(text) {
+      let html = text
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+      html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+      html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+      html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+      html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+      html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+      html = html.replace(/(<li>.*<\/li>\n?)+/g, m => '<ul>' + m + '</ul>');
+      html = html.replace(/\n\n/g, '</p><p>');
+      return '<p>' + html + '</p>';
+    }
+
+    async function load() {
+      const box = document.getElementById('doc');
+      const loading = document.getElementById('loading');
+      try {
+        const r = await fetch('/api/docs');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        document.title = (data.title || '使用说明') + ' — aiLight';
+        const md = data.content || '';
+        if (typeof marked !== 'undefined' && marked.parse) {
+          box.innerHTML = marked.parse(md);
+        } else {
+          box.innerHTML = simpleMd(md);
+        }
+      } catch (e) {
+        loading.className = 'err';
+        loading.textContent = '无法加载文档：' + e.message;
+      }
+    }
+    load();
+  </script>
+</body>
+</html>

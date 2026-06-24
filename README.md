@@ -2,6 +2,8 @@
 
 用 ESP32-C3 + 三色灯模块，把 **Cursor / TRAE** Agent 的 **忙 / 思考 / 等待 / 完成 / 出错** 映射到物理灯光。架构参考 [PromLight](https://light.ghostyu.com/ai.txt)。
 
+> **详细使用说明**（安装、配置、双机部署、故障排查等）见 **[docs/使用说明.md](docs/使用说明.md)**。
+
 ## 架构
 
 ```
@@ -29,7 +31,9 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 安装后会：
 - 安装 Python 依赖
 - 后台启动 `lightd`
-- 打开控制台 http://127.0.0.1:7801
+- 打开控制台 http://127.0.0.1:7801 （使用说明 http://127.0.0.1:7801/docs ）
+
+加 `-Autostart` 可注册登录自启：`install.ps1 -Autostart`。无 Python 环境可打包 exe：`scripts\build-lightd.ps1`。
 
 **首次使用：** 在控制台点击 **「扫描附近设备」** → **「绑定并使用」**，无需手改 `devices.json`。
 
@@ -92,10 +96,11 @@ python tools/ble_lightctl.py --scan
 
 ## 配置
 
-`config.json`：
+`config.json`（**lightd 守护进程**，跑在接灯/有蓝牙的电脑上）：
 
 ```json
 {
+  "web_host": "127.0.0.1",
   "web_port": 7801,
   "done_timeout_sec": 60,
   "waiting_timeout_sec": 300,
@@ -110,11 +115,59 @@ python tools/ble_lightctl.py --scan
 }
 ```
 
-`devices.json`：每台电脑维护自己的设备表，**建议填写 MAC**。
+| 字段 | 说明 |
+|------|------|
+| `web_host` | lightd 监听地址。默认 `127.0.0.1`（仅本机）。局域网远程访问改为 `0.0.0.0` |
+| `web_port` | HTTP 端口，默认 `7801` |
+
+`.cursor/ailight.json` 或 `.trae/ailight.json`（**IDE Hook**，跑在写代码的电脑上）：
+
+```json
+{
+  "daemon_host": "127.0.0.1",
+  "daemon_port": 7801
+}
+```
+
+| 字段 | 说明 |
+|------|------|
+| `daemon_host` | lightd 所在机器的 IP。本机部署用 `127.0.0.1`；双机部署填 lightd 那台的局域网 IP |
+| `daemon_port` | 与 `config.json` 的 `web_port` 一致 |
+
+`devices.json`：在 **lightd 所在电脑** 维护，Web 控制台绑定后会自动写入。
+
+## 双机部署（Cursor 与 lightd 分机）
+
+适合：**A 电脑接灯 + 蓝牙**，**B 电脑写代码 + Cursor**。
+
+```
+电脑 B (Cursor Hook)  --HTTP-->  电脑 A (lightd + BLE)  -->  ESP32
+```
+
+**电脑 A（灯旁，例如 192.168.1.100）**
+
+1. 安装并启动 lightd，`config.json` 中：
+   ```json
+   { "web_host": "0.0.0.0", "web_port": 7801 }
+   ```
+2. Windows 防火墙放行入站 **TCP 7801**
+3. 浏览器打开 `http://192.168.1.100:7801` → 扫描绑定设备
+
+**电脑 B（Cursor / TRAE）**
+
+1. 克隆同一项目（或只保留 `.cursor/` + `tools/ailight_hook.py` 依赖）
+2. `.cursor/ailight.json`：
+   ```json
+   { "daemon_host": "192.168.1.100", "daemon_port": 7801 }
+   ```
+3. 重启 IDE；Hook 只发 HTTP，**不需要本机蓝牙**
+
+> 安全提示：`web_host: 0.0.0.0` 时局域网内任何机器都可控灯，无鉴权。仅建议在可信内网使用。
 
 ## 常见问题
 
-- **Hook 不亮**：先确认 `http://127.0.0.1:7801` 能打开；重启 IDE（Cursor / TRAE）
+- **Hook 不亮**：先确认 lightd 地址能打开（本机 `http://127.0.0.1:7801` 或远程 `http://<lightd的IP>:7801`）；检查 `.cursor/ailight.json` 的 `daemon_host`
+- **双机不亮**：lightd 侧 `web_host` 是否为 `0.0.0.0`；防火墙是否放行 7801
 - **TRAE 不亮**：确认 Hooks 为「本地自动运行」；查看 设置 → Hooks → 运行日志
 - **BLE 连不上**：不要占用串口；`mpremote reset` 后重试
 - **空闲红绿同亮**：升级最新固件（`SET` 互斥 + `ALL_OFF` 清状态）

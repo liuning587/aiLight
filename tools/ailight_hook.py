@@ -2,7 +2,7 @@
 """
 aiLight hook -> lightd daemon (Cursor + TRAE IDE).
 
-Forwards lifecycle events to http://127.0.0.1:7801/api/event
+Forwards lifecycle events to lightd HTTP API (host/port from .cursor/ailight.json or config.json).
 Falls back to direct BLE if daemon is unavailable.
 """
 
