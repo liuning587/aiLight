@@ -94,7 +94,7 @@ class BleUart:
 
 
 class TrafficLight:
-    def __init__(self, red_pin=2, yellow_pin=3, green_pin=4, active_high=True):
+    def __init__(self, red_pin=4, yellow_pin=3, green_pin=2, active_high=True):
         # Adjust pins here to match your wiring if needed.
         self.active_high = active_high
         self.red = machine.Pin(red_pin, machine.Pin.OUT)
@@ -248,7 +248,7 @@ def _parse_int(value, default_value):
 def main():
     ble = bluetooth.BLE()
     uart = BleUart(ble, name="ESP32C3-Traffic")
-    light = TrafficLight(red_pin=2, yellow_pin=3, green_pin=4, active_high=True)
+    light = TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True)
     light.set_mode("AUTO")
     uart.write_line("READY ESP32C3-Traffic")
 
