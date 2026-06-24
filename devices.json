@@ -1,6 +1,6 @@
 {
   "default_timeout": 8.0,
-  "default_device": "lab-main",
+  "default_device": "ailight-5f9a-5f9a",
   "devices": {
     "lab-main": {
       "name": "aiLight-BD92",
@@ -19,6 +19,13 @@
       "name_prefix": "TL-B",
       "address": "",
       "timeout": 8.0
+    },
+    "ailight-5f9a-5f9a": {
+      "name": "aiLight-5F9A",
+      "name_prefix": "aiLight",
+      "address": "90:64:9B:ED:5F:9A",
+      "timeout": 8.0,
+      "bound_at": "2026-06-24T12:11:53.994315+00:00"
     }
   }
 }
