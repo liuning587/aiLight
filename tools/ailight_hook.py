@@ -115,7 +115,10 @@ def _is_enabled() -> bool:
 def _api_token() -> str:
     hook_cfg = _load_json(_hook_config_path())
     cfg = _load_json(CONFIG_PATH)
-    return str(hook_cfg.get("api_token") or cfg.get("api_token") or "").strip()
+    env_token = os.environ.get("AILIGHT_API_TOKEN", "").strip()
+    return str(
+        hook_cfg.get("api_token") or env_token or cfg.get("api_token") or ""
+    ).strip()
 
 
 def _daemon_headers(content_type: bool = True) -> dict[str, str]:
@@ -190,6 +193,15 @@ def _post_daemon(event: str, session_id: str | None = None) -> tuple[bool, str]:
         if data.get("ok"):
             return True, data.get("ble_message") or data.get("phase") or "ok"
         return False, data.get("ble_message") or "daemon error"
+    except urllib.error.HTTPError as ex:
+        if ex.code == 401:
+            return False, "unauthorized: set api_token in .cursor/ailight.json"
+        try:
+            body = ex.read().decode("utf-8")
+            detail = json.loads(body).get("error", str(ex))
+        except Exception:
+            detail = str(ex)
+        return False, detail
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as ex:
         return False, str(ex)
 
@@ -213,6 +225,10 @@ def _post_daemon_command(
         if data.get("ok"):
             return True, data.get("response") or data.get("ble_message") or "ok"
         return False, data.get("error") or data.get("ble_message") or "command failed"
+    except urllib.error.HTTPError as ex:
+        if ex.code == 401:
+            return False, "unauthorized: set api_token in .cursor/ailight.json"
+        return False, str(ex)
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as ex:
         return False, str(ex)
 
@@ -251,6 +267,14 @@ def _dispatch(
 ) -> int:
     ok, msg = _post_daemon(event, session_id=session_id)
     if not ok:
+        if "unauthorized" in msg.lower():
+            _emit_response(
+                ide,
+                trae_event,
+                {"user_message": f"aiLight 鉴权失败: {msg}"},
+                notify=True,
+            )
+            return 0
         ok2, msg2 = _fallback_ble(event)
         if not ok2 and event not in ("tool_success", "permission_done"):
             _emit_response(

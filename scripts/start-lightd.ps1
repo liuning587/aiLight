@@ -7,13 +7,25 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Test-IsLightdProcess {
+    param($Process)
+    try {
+        if ($Process.ProcessName -ieq "lightd") { return $true }
+        $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($Process.Id)" -ErrorAction SilentlyContinue).CommandLine
+        if (-not $cmd) { return $false }
+        return ($cmd -match "tools\.lightd") -or ($cmd -match "\\lightd\.exe")
+    } catch {
+        return $false
+    }
+}
+
 function Stop-LightdOnPort {
     param([int]$ListenPort)
     Get-NetTCPConnection -LocalPort $ListenPort -State Listen -ErrorAction SilentlyContinue |
         ForEach-Object {
             $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
-            if ($proc) {
-                Write-Host "==> stop PID $($proc.Id) ($($proc.ProcessName)) on port $ListenPort"
+            if ($proc -and (Test-IsLightdProcess $proc)) {
+                Write-Host "==> stop lightd PID $($proc.Id) on port $ListenPort"
                 Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             }
         }

@@ -23,8 +23,8 @@ _PRIORITY = {
     STATE_IDLE: 0,
 }
 
-MANUAL_SESSION = "__manual__"
 DEFAULT_SESSION = "default"
+DEBUG_EXPIRE_SEC = 30.0
 
 
 @dataclass
@@ -32,6 +32,7 @@ class SessionState:
     thinking: bool = False
     busy_count: int = 0
     waiting_count: int = 0
+    busy_since: float = 0.0
 
 
 @dataclass
@@ -90,18 +91,24 @@ class StateMachine:
         done_timeout_sec: float = 60.0,
         waiting_timeout_sec: float = 300.0,
         error_display_sec: float = 4.0,
+        busy_timeout_sec: float = 120.0,
     ):
         self.done_timeout_sec = done_timeout_sec
         self.waiting_timeout_sec = waiting_timeout_sec
         self.error_display_sec = error_display_sec
+        self.busy_timeout_sec = busy_timeout_sec
         self.state = LightState()
         self._sessions: dict[str, SessionState] = {}
         self._waiting_deadline = 0.0
+        self._debug_phase: str | None = None
+        self._debug_until: float = 0.0
 
     def reset(self) -> None:
         self._sessions.clear()
         self.state.reset()
         self._waiting_deadline = 0.0
+        self._debug_phase = None
+        self._debug_until = 0.0
 
     def session_count(self) -> int:
         return len(self._sessions)
@@ -125,6 +132,20 @@ class StateMachine:
         self.state.thinking = any(s.thinking for s in self._sessions.values())
         self.state.busy_count = sum(s.busy_count for s in self._sessions.values())
         self.state.waiting_count = sum(s.waiting_count for s in self._sessions.values())
+
+    def resolve_phase(self, now: float | None = None) -> str:
+        now = now or time.time()
+        if self._debug_until > now and self._debug_phase:
+            return self._debug_phase
+        return self.state.resolve(now)
+
+    def _set_debug(self, phase: str, now: float) -> None:
+        self._debug_phase = phase
+        self._debug_until = now + DEBUG_EXPIRE_SEC
+
+    def _clear_debug(self) -> None:
+        self._debug_phase = None
+        self._debug_until = 0.0
 
     def _dec_waiting(self, sess: SessionState, now: float) -> None:
         if sess.waiting_count > 0:
@@ -150,13 +171,31 @@ class StateMachine:
             self._sync_aggregate()
             self._waiting_deadline = 0.0
 
+    def _expire_busy(self, now: float) -> None:
+        changed = False
+        for sess in self._sessions.values():
+            if (
+                sess.busy_count > 0
+                and sess.busy_since
+                and now - sess.busy_since > self.busy_timeout_sec
+            ):
+                sess.busy_count = 0
+                sess.busy_since = 0.0
+                sess.thinking = True
+                changed = True
+        if changed:
+            self._sync_aggregate()
+
     def apply(
         self, event: str, session_id: str | None = None
     ) -> tuple[str, str | None]:
         """Return (resolved_phase, reason_if_no_change)."""
         now = time.time()
         self._expire_waiting(now)
-        prev = self.state.resolve(now)
+        self._expire_busy(now)
+        if self._debug_until and now >= self._debug_until:
+            self._clear_debug()
+        prev = self.resolve_phase(now)
         sid = self._sid(session_id)
 
         if event == "session_start":
@@ -168,26 +207,14 @@ class StateMachine:
             sess.thinking = True
             self.state.done_until = 0.0
             self._sync_aggregate()
-        elif event == "thinking":
-            self._sessions.clear()
-            self._sessions[MANUAL_SESSION] = SessionState(thinking=True)
-            self.state.done_until = 0.0
-            self._sync_aggregate()
-        elif event == "busy":
-            self._sessions.clear()
-            self._sessions[MANUAL_SESSION] = SessionState(busy_count=1)
-            self.state.done_until = 0.0
-            self._sync_aggregate()
-        elif event == "waiting":
-            self._sessions.clear()
-            manual = SessionState(waiting_count=1)
-            self._sessions[MANUAL_SESSION] = manual
-            self._waiting_deadline = now + self.waiting_timeout_sec
-            self._sync_aggregate()
+        elif event in ("thinking", "busy", "waiting"):
+            self._set_debug(event, now)
         elif event == "tool_start":
             sess = self._session(session_id)
             if sess.waiting_count > 0:
                 sess.waiting_count -= 1
+            if sess.busy_count == 0:
+                sess.busy_since = now
             sess.thinking = False
             sess.busy_count += 1
             self.state.done_until = 0.0
@@ -201,6 +228,7 @@ class StateMachine:
             if sess.busy_count > 0:
                 sess.busy_count -= 1
             if sess.busy_count == 0:
+                sess.busy_since = 0.0
                 sess.thinking = True
             self._sync_aggregate()
         elif event == "permission_wait":
@@ -228,6 +256,8 @@ class StateMachine:
             sess.thinking = False
             if sess.busy_count > 0:
                 sess.busy_count -= 1
+            if sess.busy_count == 0:
+                sess.busy_since = 0.0
             self.state.error_until = now + self.error_display_sec
             self._sync_aggregate()
         elif event == "force_idle":
@@ -236,7 +266,7 @@ class StateMachine:
             return prev, f"unknown event: {event}"
 
         self._touch(event)
-        new_phase = self.state.resolve(now)
+        new_phase = self.resolve_phase(now)
         if new_phase == prev and event not in (
             "tool_start",
             "permission_wait",
@@ -253,13 +283,16 @@ class StateMachine:
     def tick(self) -> str | None:
         """Return new phase if timeout changed visible state, else None."""
         now = time.time()
-        prev = self.state.resolve(now)
+        prev = self.resolve_phase(now)
         self._expire_waiting(now)
+        self._expire_busy(now)
+        if self._debug_until and now >= self._debug_until:
+            self._clear_debug()
         if self.state.done_until and now >= self.state.done_until:
             self.state.done_until = 0.0
         if self.state.error_until and now >= self.state.error_until:
             self.state.error_until = 0.0
-        new_phase = self.state.resolve(now)
+        new_phase = self.resolve_phase(now)
         if new_phase != prev:
             return new_phase
         return None

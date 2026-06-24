@@ -6,6 +6,7 @@
   "done_timeout_sec": 60,
   "waiting_timeout_sec": 300,
   "error_display_sec": 4,
+  "busy_timeout_sec": 120,
   "ble_keepalive_sec": 30,
   "event_log_max": 100,
   "default_device": "lab-main",

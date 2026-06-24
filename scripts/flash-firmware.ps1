@@ -13,6 +13,20 @@ if (-not (Test-Path $Firmware)) {
 Write-Host "==> ensure mpremote"
 python -m pip install mpremote -q
 
+Write-Host "==> stop lightd (free COM/BLE before flash)"
+Get-NetTCPConnection -LocalPort 7801 -State Listen -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $proc = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+        if ($proc) {
+            $cmd = (Get-CimInstance Win32_Process -Filter "ProcessId=$($proc.Id)" -ErrorAction SilentlyContinue).CommandLine
+            if ($cmd -match "tools\.lightd" -or $cmd -match "\\lightd\.exe" -or $proc.ProcessName -ieq "lightd") {
+                Write-Host "==> stop lightd PID $($proc.Id)"
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+Start-Sleep -Seconds 1
+
 function Get-SerialPorts {
     Get-CimInstance Win32_SerialPort |
         Where-Object { $_.DeviceID -match '^COM\d+$' } |

@@ -268,14 +268,12 @@ class TrafficLight:
                     self.set_all(0, 0, 0)
 
     def status(self):
-        return (
-            "MODE={mode}, POLARITY={pol}, MANUAL(R={r},Y={y},G={g})".format(
-                mode=self.mode,
-                pol=("HIGH" if self.active_high else "LOW"),
-                r=self._manual_state["RED"],
-                y=self._manual_state["YELLOW"],
-                g=self._manual_state["GREEN"],
-            )
+        return "MODE={mode}, POLARITY={pol}, MANUAL(R={r},Y={y},G={g})".format(
+            mode=self.mode,
+            pol=("HIGH" if self.active_high else "LOW"),
+            r=self._manual_state["RED"],
+            y=self._manual_state["YELLOW"],
+            g=self._manual_state["GREEN"],
         )
 
     def set_polarity(self, active_high):
@@ -307,7 +305,9 @@ def main():
     ble.active(True)
     mac_bytes = _get_ble_mac(ble)
     mac_text = _fmt_mac(mac_bytes)
-    mac_suffix = "".join("{:02X}".format(b) for b in mac_bytes[-2:]) if mac_bytes else "NA"
+    mac_suffix = (
+        "".join("{:02X}".format(b) for b in mac_bytes[-2:]) if mac_bytes else "NA"
+    )
     ble_name = "aiLight-{}".format(mac_suffix)
     uart = BleUart(ble, name=ble_name)
     light = TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True)
@@ -329,7 +329,15 @@ def main():
                 )
             elif parts[0] == "MODE" and len(parts) >= 2:
                 mode = parts[1]
-                if mode in ("AUTO", "MANUAL", "FLASH_YELLOW", "THINK_SLOW", "ALL_OFF", "WAIT", "DONE"):
+                if mode in (
+                    "AUTO",
+                    "MANUAL",
+                    "FLASH_YELLOW",
+                    "THINK_SLOW",
+                    "ALL_OFF",
+                    "WAIT",
+                    "DONE",
+                ):
                     light.set_mode(mode)
                     response = "OK MODE {}".format(mode)
                 else:
@@ -375,4 +383,3 @@ def main():
 
 
 main()
-

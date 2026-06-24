@@ -38,7 +38,7 @@ powershell -ExecutionPolicy Bypass -File install.ps1
 **首次使用：** 在控制台点击 **「扫描附近设备」** → **「绑定并使用」**，无需手改 `devices.json`。
 
 **然后请：**
-1. 上传固件：`mpremote connect COMx fs cp firmware/main.py :main.py`
+1. 烧录固件：`powershell -File scripts\flash-firmware.ps1`（或 `mpremote`）
 2. 板子上电（BLE 名 `aiLight-XXXX`）
 3. **重启 IDE**（Cursor 或 TRAE），新开 Agent 对话
 
@@ -119,6 +119,9 @@ python tools/ble_lightctl.py --scan
 |------|------|
 | `web_host` | lightd 监听地址。默认 `127.0.0.1`（仅本机）。局域网远程访问改为 `0.0.0.0` |
 | `web_port` | HTTP 端口，默认 `7801` |
+| `api_token` | API 鉴权令牌（空=不启用）；双机部署时 Hook 侧 `.cursor/ailight.json` 需同步 |
+| `ble_keepalive_sec` | BLE 保活探测间隔（秒） |
+| `busy_timeout_sec` | 忙碌状态超时回落（秒），防 Hook 丢失导致一直黄闪 |
 
 `.cursor/ailight.json` 或 `.trae/ailight.json`（**IDE Hook**，跑在写代码的电脑上）：
 
@@ -158,11 +161,15 @@ python tools/ble_lightctl.py --scan
 1. 克隆同一项目（或只保留 `.cursor/` + `tools/ailight_hook.py` 依赖）
 2. `.cursor/ailight.json`：
    ```json
-   { "daemon_host": "192.168.1.100", "daemon_port": 7801 }
+   {
+     "daemon_host": "192.168.1.100",
+     "daemon_port": 7801,
+     "api_token": "与 lightd 侧 config.json 相同"
+   }
    ```
 3. 重启 IDE；Hook 只发 HTTP，**不需要本机蓝牙**
 
-> 安全提示：`web_host: 0.0.0.0` 时局域网内任何机器都可控灯，无鉴权。仅建议在可信内网使用。
+> 安全提示：`web_host: 0.0.0.0` 时建议设置 `api_token`（`config.json`），并在 Hook 侧同步。仍建议仅在内网使用；公网请加 TLS 反代。
 
 ## 常见问题
 

@@ -25,6 +25,7 @@ from tools.lightd.devices_store import (
 from tools.lightd.paths import project_root, resource_path
 from tools.lightd.event_log import EventLog
 from tools.lightd.state_machine import StateMachine
+from tools.light_client import load_devices_config
 
 _DOCS_MD_CANDIDATES = ("docs/使用说明.md",)
 _CONFIG_HOT_KEYS = frozenset(
@@ -32,6 +33,7 @@ _CONFIG_HOT_KEYS = frozenset(
         "done_timeout_sec",
         "waiting_timeout_sec",
         "error_display_sec",
+        "busy_timeout_sec",
         "state_commands",
         "dry_run",
         "ble_keepalive_sec",
@@ -118,6 +120,7 @@ class Daemon:
             done_timeout_sec=float(cfg.get("done_timeout_sec", 60)),
             waiting_timeout_sec=float(cfg.get("waiting_timeout_sec", 300)),
             error_display_sec=float(cfg.get("error_display_sec", 4)),
+            busy_timeout_sec=float(cfg.get("busy_timeout_sec", 120)),
         )
         self.commands = cfg.get("state_commands") or {}
         self.dry_run = bool(cfg.get("dry_run", False))
@@ -163,6 +166,7 @@ class Daemon:
             self.sm.done_timeout_sec = float(cfg.get("done_timeout_sec", 60))
             self.sm.waiting_timeout_sec = float(cfg.get("waiting_timeout_sec", 300))
             self.sm.error_display_sec = float(cfg.get("error_display_sec", 4))
+            self.sm.busy_timeout_sec = float(cfg.get("busy_timeout_sec", 120))
             self.commands = cfg.get("state_commands") or {}
             self.dry_run = bool(cfg.get("dry_run", False))
             self._keepalive_sec = float(cfg.get("ble_keepalive_sec", 30))
@@ -199,6 +203,11 @@ class Daemon:
         self._last_ble_ok = ok
         self._last_ble_msg = msg
         return ok, msg
+
+    def _note_ble_result(self, ok: bool, msg: str) -> None:
+        with self._lock:
+            self._last_ble_ok = ok
+            self._last_ble_msg = msg
 
     def _ble_queue_loop(self) -> None:
         while True:
@@ -263,7 +272,8 @@ class Daemon:
             if self.dry_run:
                 return {"ok": True, "response": f"DRY_RUN {command}"}
             target = (device_alias or "").strip() or None
-            if target and target != self.device_alias:
+            need_switch = bool(target and target != self.device_alias)
+            if need_switch:
                 set_default_everywhere(
                     target,
                     self.devices_config,
@@ -272,22 +282,23 @@ class Daemon:
                 )
                 self.device_alias = target
                 self.cfg["default_device"] = target
-                ok_sw, msg_sw = self.ble.switch_device(target)
-                if not ok_sw:
-                    return {"ok": False, "error": msg_sw}
-            ok, msg = self.ble.send(command)
-            self._last_ble_ok = ok
-            self._last_ble_msg = msg
-            return {
-                "ok": ok,
-                "response": msg,
-                "ble_message": msg,
-                "error": "" if ok else msg,
-            }
+        if need_switch and not self.dry_run:
+            ok_sw, msg_sw = self.ble.switch_device(target)
+            if not ok_sw:
+                return {"ok": False, "error": msg_sw}
+        ok, msg = self.ble.send(command)
+        self._note_ble_result(ok, msg)
+        return {
+            "ok": ok,
+            "response": msg,
+            "ble_message": msg,
+            "error": "" if ok else msg,
+        }
 
     def status(self) -> dict:
         with self._lock:
             data = self.sm.state.to_dict()
+            data["phase"] = self.sm.resolve_phase()
             data["command"] = self.commands.get(data["phase"])
             data["dry_run"] = self.dry_run
             data["ble"] = self.ble.status() if not self.dry_run else {}
@@ -313,24 +324,21 @@ class Daemon:
         )
 
     def scan_devices(self, timeout: float = 8.0, show_all: bool = False) -> dict:
-        with self._lock:
-            if self.dry_run:
-                return {"ok": True, "devices": []}
-            ok, result = self.ble.scan(timeout=timeout, show_all=show_all)
-            if not ok:
-                return {"ok": False, "error": result, "devices": []}
-            from tools.light_client import load_devices_config
-
-            cfg = load_devices_config(self.devices_config)
-            devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
-            bound = {
-                (d.get("address") or "").upper()
-                for d in devices.values()
-                if isinstance(d, dict)
-            }
-            for row in result:
-                row["already_bound"] = row["address"].upper() in bound
-            return {"ok": True, "devices": result}
+        if self.dry_run:
+            return {"ok": True, "devices": []}
+        ok, result = self.ble.scan(timeout=timeout, show_all=show_all)
+        if not ok:
+            return {"ok": False, "error": result, "devices": []}
+        cfg = load_devices_config(self.devices_config)
+        devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
+        bound = {
+            (d.get("address") or "").upper()
+            for d in devices.values()
+            if isinstance(d, dict)
+        }
+        for row in result:
+            row["already_bound"] = row["address"].upper() in bound
+        return {"ok": True, "devices": result}
 
     def bind_and_use(
         self,
@@ -404,11 +412,10 @@ class Daemon:
         return {"ok": ok, "response": msg, "error": "" if ok else msg}
 
     def remove_device(self, alias: str) -> dict:
+        switch_alias = None
         with self._lock:
             was_active = alias == self.device_alias
             delete_device(self.devices_config, alias)
-            from tools.light_client import load_devices_config
-
             cfg = load_devices_config(self.devices_config)
             new_default = (cfg.get("default_device") or "").strip()
             if new_default:
@@ -420,11 +427,12 @@ class Daemon:
                 )
                 self.device_alias = new_default
                 self.cfg["default_device"] = new_default
+                if was_active:
+                    switch_alias = new_default
             else:
                 self.device_alias = None
-
-        if was_active and self.device_alias and not self.dry_run:
-            self.ble.switch_device(self.device_alias)
+        if switch_alias and not self.dry_run:
+            self.ble.switch_device(switch_alias)
         return {"ok": True, "default_device": self.device_alias}
 
     def _tick_loop(self) -> None:

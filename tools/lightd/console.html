@@ -206,6 +206,12 @@
           <input id="cfgError" type="number" min="1" step="1"/>
         </div>
         <div>
+          <label for="cfgBusy">忙碌超时（秒）</label>
+          <input id="cfgBusy" type="number" min="30" step="1"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
           <label for="cfgDryRun">Dry Run（不发 BLE）</label>
           <select id="cfgDryRun" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f1419;color:var(--text)">
             <option value="false">false</option>
@@ -240,6 +246,15 @@
 
   <div class="toast" id="toast"></div>
 
+  <div id="authBanner" class="card" style="display:none;border-color:#eab308;background:#422006">
+    <h2 style="margin-top:0">需要 API Token</h2>
+    <p class="hint" style="margin:0 0 10px;color:#fde68a">守护进程已启用鉴权。请在下方「守护进程配置」填写 Token 后点保存，或在此输入后点应用。</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <input id="authTokenQuick" type="password" placeholder="API Token" style="flex:1;min-width:180px"/>
+      <button class="btn btn-sm btn-warn" type="button" onclick="applyTokenQuick()">应用 Token</button>
+    </div>
+  </div>
+
   <script>
     let scanning = false;
     const TOKEN_KEY = 'ailight_token';
@@ -251,6 +266,16 @@
     function setToken(t) {
       if (t) sessionStorage.setItem(TOKEN_KEY, t);
       else sessionStorage.removeItem(TOKEN_KEY);
+    }
+
+    function applyTokenQuick() {
+      const t = document.getElementById('authTokenQuick').value.trim();
+      if (!t) { toast('请输入 Token'); return; }
+      setToken(t);
+      document.getElementById('authBanner').style.display = 'none';
+      toast('Token 已应用');
+      refresh();
+      loadConfigForm();
     }
 
     function authHeaders(extra = {}) {
@@ -272,7 +297,8 @@
       const r = await fetch(path, { ...opts, headers });
       const j = await r.json().catch(() => ({}));
       if (r.status === 401) {
-        throw new Error('未授权：请在下方配置中填写 API Token');
+        document.getElementById('authBanner').style.display = 'block';
+        throw new Error('未授权：请填写 API Token');
       }
       if (!r.ok) throw new Error(j.error || '请求失败');
       return j;
@@ -391,6 +417,7 @@
       document.getElementById('cfgDone').value = cfg.done_timeout_sec ?? 60;
       document.getElementById('cfgWait').value = cfg.waiting_timeout_sec ?? 300;
       document.getElementById('cfgError').value = cfg.error_display_sec ?? 4;
+      document.getElementById('cfgBusy').value = cfg.busy_timeout_sec ?? 120;
       document.getElementById('cfgDryRun').value = cfg.dry_run ? 'true' : 'false';
       document.getElementById('cfgCommands').value = JSON.stringify(cfg.state_commands || {}, null, 2);
       if (cfg.auth_required && !getToken()) {
@@ -422,6 +449,7 @@
         done_timeout_sec: Number(document.getElementById('cfgDone').value),
         waiting_timeout_sec: Number(document.getElementById('cfgWait').value),
         error_display_sec: Number(document.getElementById('cfgError').value),
+        busy_timeout_sec: Number(document.getElementById('cfgBusy').value),
         dry_run: document.getElementById('cfgDryRun').value === 'true',
         state_commands: commands,
       };
