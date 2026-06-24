@@ -89,7 +89,14 @@
       padding: 10px 0; border-bottom: 1px solid var(--border);
     }
     .saved-item:last-child { border-bottom: 0; }
-    .phase { font-size: 1.6rem; font-weight: 700; }
+    .channel-grid { display: grid; gap: 12px; }
+    @media (min-width: 520px) { .channel-grid { grid-template-columns: 1fr 1fr; } }
+    .channel-box {
+      padding: 12px; background: #0f1419; border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+    .channel-box .ch-title { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+    .channel-box .ch-phase { font-size: 1.35rem; font-weight: 700; }
     .debug-btns { display: flex; flex-wrap: wrap; gap: 8px; }
     .toast {
       position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -158,15 +165,54 @@
 
   <div class="card">
     <h2>灯效调试 &amp; 状态</h2>
-    <div>当前灯态：<span class="phase" id="phase">-</span></div>
-    <p class="hint" id="detail" style="margin-top:4px"></p>
+    <div class="channel-grid" id="channelGrid"></div>
+    <p class="hint" id="detail" style="margin-top:8px"></p>
     <div class="debug-btns" style="margin-top:12px">
+      <label style="width:100%;margin-bottom:4px">调试目标</label>
+      <select id="debugChannel" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f1419;color:var(--text);margin-bottom:8px">
+        <option value="1">灯位 A (CH1)</option>
+        <option value="2">灯位 B (CH2)</option>
+      </select>
       <button class="btn btn-sm btn-warn" onclick="ev('thinking')">思考·黄慢闪</button>
       <button class="btn btn-sm btn-warn" onclick="ev('busy')">忙碌·黄快闪</button>
       <button class="btn btn-sm btn-err" onclick="ev('waiting')">等待·红灯</button>
       <button class="btn btn-sm btn-ok" onclick="ev('session_stop')">完成·绿灯</button>
       <button class="btn btn-sm btn-err" onclick="ev('tool_failure')">出错·红闪</button>
       <button class="btn btn-sm btn-ghost" onclick="ev('force_idle')">空闲·全灭</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>IDE 客户端路由</h2>
+    <p class="hint" style="margin-top:0">每个 IDE 项目在 <code>.cursor/ailight.json</code> 或 <code>.trae/ailight.json</code> 设置 <code>client_id</code>，与此处映射到灯位。支持 2×Cursor、2×TRAE 等任意组合。</p>
+    <div class="form-grid">
+      <div class="form-row">
+        <div>
+          <label for="routeSlotA">client_id → 灯位（槽位 A）</label>
+          <input id="routeSlotA" placeholder="slot-a"/>
+        </div>
+        <div>
+          <label for="routeChA">灯位</label>
+          <select id="routeChA" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f1419;color:var(--text)">
+            <option value="1">灯位 A (GPIO2/3/4)</option>
+            <option value="2">灯位 B (R7/Y6/G5)</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="routeSlotB">client_id → 灯位（槽位 B）</label>
+          <input id="routeSlotB" placeholder="slot-b"/>
+        </div>
+        <div>
+          <label for="routeChB">灯位</label>
+          <select id="routeChB" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f1419;color:var(--text)">
+            <option value="1">灯位 A (GPIO2/3/4)</option>
+            <option value="2">灯位 B (R7/Y6/G5)</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-sm btn-ghost" type="button" onclick="saveClientRoutes()">保存路由</button>
     </div>
   </div>
 
@@ -312,6 +358,64 @@
       return Math.floor(sec / 60) + ' 分钟前';
     }
 
+    function renderChannels(status) {
+      const grid = document.getElementById('channelGrid');
+      const channels = status.channels || {};
+      const routes = status.client_routes || {};
+      const routeText = Object.keys(routes).length
+        ? Object.entries(routes).map(([k, v]) => k + '→CH' + v).join(' · ')
+        : '未配置 client_routes';
+      const keys = Object.keys(channels).sort();
+      if (!keys.length) {
+        grid.innerHTML = '<div class="channel-box"><div class="ch-phase">' + esc(status.phase || '-') + '</div></div>';
+      } else {
+        grid.innerHTML = keys.map(ch => {
+          const c = channels[ch] || {};
+          return `<div class="channel-box">
+            <div class="ch-title">${esc(c.label || ('灯位 ' + ch))} · CH${esc(ch)}</div>
+            <div class="ch-phase">${esc(c.phase || '-')}</div>
+            <div class="hint" style="margin:4px 0 0">会话 ${c.active_sessions || 0}</div>
+          </div>`;
+        }).join('');
+      }
+      document.getElementById('detail').textContent =
+        '路由 ' + routeText + ' · BLE ' +
+        (status.ble_ok ? '正常' : '异常') + ' · ' + (status.ble_message || '');
+    }
+
+    function fillClientRoutes(cfg) {
+      const routes = cfg.client_routes || {};
+      const entries = Object.entries(routes);
+      const a = entries[0] || ['slot-a', '1'];
+      const b = entries[1] || ['slot-b', '2'];
+      document.getElementById('routeSlotA').value = a[0];
+      document.getElementById('routeChA').value = String(a[1]);
+      document.getElementById('routeSlotB').value = b[0];
+      document.getElementById('routeChB').value = String(b[1]);
+    }
+
+    async function saveClientRoutes() {
+      const a = document.getElementById('routeSlotA').value.trim();
+      const b = document.getElementById('routeSlotB').value.trim();
+      if (!a || !b) { toast('请填写两个 client_id'); return; }
+      if (a === b) { toast('client_id 不能相同'); return; }
+      const routes = {};
+      routes[a] = document.getElementById('routeChA').value;
+      routes[b] = document.getElementById('routeChB').value;
+      try {
+        await api('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_routes: routes }),
+        });
+        toast('路由已保存');
+        await refresh();
+        await loadConfigForm();
+      } catch (e) {
+        toast('保存失败: ' + e.message);
+      }
+    }
+
     function renderConnLine(status) {
       const el = document.getElementById('connLine');
       const ble = status.ble || {};
@@ -420,6 +524,7 @@
       document.getElementById('cfgBusy').value = cfg.busy_timeout_sec ?? 120;
       document.getElementById('cfgDryRun').value = cfg.dry_run ? 'true' : 'false';
       document.getElementById('cfgCommands').value = JSON.stringify(cfg.state_commands || {}, null, 2);
+      fillClientRoutes(cfg);
       if (cfg.auth_required && !getToken()) {
         document.getElementById('cfgToken').placeholder = '已启用鉴权，请输入 Token';
       }
@@ -478,10 +583,7 @@
     async function refresh() {
       try {
         const status = await api('/api/status');
-        document.getElementById('phase').textContent = status.phase || '-';
-        document.getElementById('detail').textContent =
-          '会话 ' + (status.active_sessions || 0) + ' · BLE ' +
-          (status.ble_ok ? '正常' : '异常') + ' · ' + (status.ble_message || '');
+        renderChannels(status);
         renderConnLine(status);
         const dev = await api('/api/devices');
         renderCurrent({ active: dev.active, ble: status.ble, ble_ok: status.ble_ok });
@@ -578,10 +680,11 @@
     }
 
     async function ev(name) {
+      const channel = document.getElementById('debugChannel').value;
       await api('/api/event', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ event: name, source: 'web' })
+        body: JSON.stringify({ event: name, source: 'web', channel })
       });
       await refresh();
     }

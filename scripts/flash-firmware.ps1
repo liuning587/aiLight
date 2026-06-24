@@ -52,13 +52,13 @@ if (-not $Port) {
 }
 
 Write-Host "==> upload firmware to $Port"
-mpremote connect $Port fs cp $Firmware :main.py
+python -m mpremote connect $Port fs cp $Firmware :main.py
 if ($LASTEXITCODE -ne 0) {
     throw "mpremote upload failed (is the port in use by another app?)"
 }
 
 Write-Host "==> reset board"
-mpremote connect $Port reset
+python -m mpremote connect $Port reset
 Write-Host ""
 Write-Host "Done. Board should advertise as aiLight-XXXX over BLE."
 Write-Host "Next: run install.ps1 or start-lightd.ps1, then bind at http://127.0.0.1:7801"

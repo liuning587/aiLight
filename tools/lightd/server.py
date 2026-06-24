@@ -24,6 +24,13 @@ from tools.lightd.devices_store import (
 )
 from tools.lightd.paths import project_root, resource_path
 from tools.lightd.event_log import EventLog
+from tools.lightd.channels import (
+    channel_labels,
+    client_routes_payload,
+    list_channel_ids,
+    prefix_ble_command,
+    resolve_channel,
+)
 from tools.lightd.state_machine import StateMachine
 from tools.light_client import load_devices_config
 
@@ -39,6 +46,9 @@ _CONFIG_HOT_KEYS = frozenset(
         "ble_keepalive_sec",
         "api_token",
         "event_log_max",
+        "client_routes",
+        "channels",
+        "default_channel",
     }
 )
 
@@ -116,12 +126,6 @@ def load_docs_markdown() -> tuple[str, str]:
 class Daemon:
     def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.sm = StateMachine(
-            done_timeout_sec=float(cfg.get("done_timeout_sec", 60)),
-            waiting_timeout_sec=float(cfg.get("waiting_timeout_sec", 300)),
-            error_display_sec=float(cfg.get("error_display_sec", 4)),
-            busy_timeout_sec=float(cfg.get("busy_timeout_sec", 120)),
-        )
         self.commands = cfg.get("state_commands") or {}
         self.dry_run = bool(cfg.get("dry_run", False))
         self.device_alias = cfg.get("default_device")
@@ -135,14 +139,16 @@ class Daemon:
             if os.path.isabs(devices_cfg)
             else os.path.join(project_root(), devices_cfg)
         )
+        self._sms: dict[str, StateMachine] = {}
+        self._channel_phases: dict[str, str] = {}
+        self._init_channel_state_machines(cfg)
         self.ble = BleWorker(
             device_alias=self.device_alias, config_path=self.devices_config
         )
-        self.current_phase = "idle"
         self._lock = threading.Lock()
         self._last_ble_ok = True
         self._last_ble_msg = ""
-        self._ble_pending: str | None = None
+        self._ble_queue: list[str] = []
         self._ble_wake = threading.Event()
         self._ble_worker_thread = threading.Thread(
             target=self._ble_queue_loop, name="ailight-ble-queue", daemon=True
@@ -160,16 +166,54 @@ class Daemon:
         if not self.dry_run:
             self._keepalive.start()
 
+    def _sm_params(self, cfg: dict) -> dict:
+        return {
+            "done_timeout_sec": float(cfg.get("done_timeout_sec", 60)),
+            "waiting_timeout_sec": float(cfg.get("waiting_timeout_sec", 300)),
+            "error_display_sec": float(cfg.get("error_display_sec", 4)),
+            "busy_timeout_sec": float(cfg.get("busy_timeout_sec", 120)),
+        }
+
+    def _init_channel_state_machines(self, cfg: dict) -> None:
+        params = self._sm_params(cfg)
+        for ch in list_channel_ids(cfg):
+            if ch not in self._sms:
+                self._sms[ch] = StateMachine(**params)
+                self._channel_phases[ch] = "idle"
+            else:
+                sm = self._sms[ch]
+                sm.done_timeout_sec = params["done_timeout_sec"]
+                sm.waiting_timeout_sec = params["waiting_timeout_sec"]
+                sm.error_display_sec = params["error_display_sec"]
+                sm.busy_timeout_sec = params["busy_timeout_sec"]
+
+    def _sm(self, channel: str) -> StateMachine:
+        ch = resolve_channel(self.cfg, channel=channel)
+        if ch not in self._sms:
+            self._sms[ch] = StateMachine(**self._sm_params(self.cfg))
+            self._channel_phases[ch] = "idle"
+        return self._sms[ch]
+
+    @property
+    def sm(self) -> StateMachine:
+        """Channel 1 state machine (backward compatible)."""
+        return self._sm("1")
+
+    @property
+    def current_phase(self) -> str:
+        return self._channel_phases.get("1", "idle")
+
+    @current_phase.setter
+    def current_phase(self, value: str) -> None:
+        self._channel_phases["1"] = value
+
     def apply_config(self, cfg: dict) -> None:
         with self._lock:
             self.cfg = cfg
-            self.sm.done_timeout_sec = float(cfg.get("done_timeout_sec", 60))
-            self.sm.waiting_timeout_sec = float(cfg.get("waiting_timeout_sec", 300))
-            self.sm.error_display_sec = float(cfg.get("error_display_sec", 4))
-            self.sm.busy_timeout_sec = float(cfg.get("busy_timeout_sec", 120))
             self.commands = cfg.get("state_commands") or {}
             self.dry_run = bool(cfg.get("dry_run", False))
             self._keepalive_sec = float(cfg.get("ble_keepalive_sec", 30))
+            self._init_channel_state_machines(cfg)
 
     def _record_event(
         self,
@@ -187,22 +231,32 @@ class Daemon:
             detail=detail,
         )
 
-    def _apply_phase(self, phase: str, async_send: bool = False) -> tuple[bool, str]:
+    def _apply_phase(
+        self,
+        channel: str,
+        phase: str,
+        async_send: bool = False,
+    ) -> tuple[bool, str]:
         cmd = self.commands.get(phase)
         if not cmd:
             return False, f"no command for phase {phase}"
-        self.current_phase = phase
-        self.sm.state.last_command = cmd
+        ch = resolve_channel(self.cfg, channel=channel)
+        self._channel_phases[ch] = phase
+        self._sm(ch).state.last_command = cmd
+        ble_cmd = prefix_ble_command(ch, cmd)
         if self.dry_run:
-            return True, f"DRY_RUN {cmd}"
+            return True, f"DRY_RUN {ble_cmd}"
         if async_send:
-            self._ble_pending = cmd
-            self._ble_wake.set()
-            return True, f"QUEUED {cmd}"
-        ok, msg = self.ble.send(cmd)
+            self._enqueue_ble(ble_cmd)
+            return True, f"QUEUED {ble_cmd}"
+        ok, msg = self.ble.send(ble_cmd)
         self._last_ble_ok = ok
         self._last_ble_msg = msg
         return ok, msg
+
+    def _enqueue_ble(self, command: str) -> None:
+        self._ble_queue.append(command)
+        self._ble_wake.set()
 
     def _note_ble_result(self, ok: bool, msg: str) -> None:
         with self._lock:
@@ -213,64 +267,88 @@ class Daemon:
         while True:
             self._ble_wake.wait(timeout=0.1)
             self._ble_wake.clear()
-            cmd = None
+            cmds: list[str] = []
             with self._lock:
-                if self._ble_pending:
-                    cmd = self._ble_pending
-                    self._ble_pending = None
-            if not cmd:
+                while self._ble_queue:
+                    cmds.append(self._ble_queue.pop(0))
+            if not cmds:
                 continue
-            # Coalesce rapid hook bursts; keep short so single events stay snappy.
-            time.sleep(0.025)
             with self._lock:
-                if self._ble_pending:
-                    cmd = self._ble_pending
-                    self._ble_pending = None
+                while self._ble_queue:
+                    cmds.append(self._ble_queue.pop(0))
             if not self.dry_run:
-                ok, msg = self.ble.send(cmd, timeout=2.0)
-                with self._lock:
-                    self._last_ble_ok = ok
-                    self._last_ble_msg = msg
+                for cmd in cmds:
+                    ok, msg = self.ble.send(cmd, timeout=2.0)
+                    with self._lock:
+                        self._last_ble_ok = ok
+                        self._last_ble_msg = msg
 
     def handle_event(
         self,
         event: str,
         session_id: str | None = None,
         source: str = "hook",
+        client_id: str | None = None,
+        channel: str | None = None,
     ) -> dict:
+        ch = resolve_channel(self.cfg, client_id=client_id, channel=channel)
+        sm = self._sm(ch)
         with self._lock:
-            phase, reason = self.sm.apply(event, session_id=session_id)
+            phase, reason = sm.apply(event, session_id=session_id)
+            detail_prefix = f"ch={ch}"
             if reason == "no_change":
                 self._record_event(
-                    event, phase, session_id=session_id, source=source, detail=reason
+                    event,
+                    phase,
+                    session_id=session_id,
+                    source=source,
+                    detail=f"{detail_prefix} {reason}",
                 )
                 return {
                     "ok": True,
                     "phase": phase,
+                    "channel": ch,
                     "skipped": True,
                     "reason": reason,
                     "ble_ok": self._last_ble_ok,
                 }
-            ok, msg = self._apply_phase(phase, async_send=True)
+            ok, msg = self._apply_phase(ch, phase, async_send=True)
             self._record_event(
-                event, phase, session_id=session_id, source=source, detail=msg
+                event,
+                phase,
+                session_id=session_id,
+                source=source,
+                detail=f"{detail_prefix} {msg}",
             )
             return {
                 "ok": ok,
                 "phase": phase,
+                "channel": ch,
                 "event": event,
-                "command": self.commands.get(phase),
+                "command": prefix_ble_command(ch, self.commands.get(phase) or ""),
                 "queued": True,
                 "ble_message": msg,
             }
 
-    def send_command(self, command: str, device_alias: str | None = None) -> dict:
+    def send_command(
+        self,
+        command: str,
+        device_alias: str | None = None,
+        client_id: str | None = None,
+        channel: str | None = None,
+    ) -> dict:
         command = (command or "").strip()
         if not command:
             return {"ok": False, "error": "command required"}
+        ch = resolve_channel(self.cfg, client_id=client_id, channel=channel)
+        ble_cmd = prefix_ble_command(ch, command)
         with self._lock:
             if self.dry_run:
-                return {"ok": True, "response": f"DRY_RUN {command}"}
+                return {
+                    "ok": True,
+                    "response": f"DRY_RUN {ble_cmd}",
+                    "channel": ch,
+                }
             target = (device_alias or "").strip() or None
             need_switch = bool(target and target != self.device_alias)
             if need_switch:
@@ -286,26 +364,46 @@ class Daemon:
             ok_sw, msg_sw = self.ble.switch_device(target)
             if not ok_sw:
                 return {"ok": False, "error": msg_sw}
-        ok, msg = self.ble.send(command)
+        ok, msg = self.ble.send(ble_cmd)
         self._note_ble_result(ok, msg)
         return {
             "ok": ok,
             "response": msg,
             "ble_message": msg,
+            "channel": ch,
             "error": "" if ok else msg,
         }
 
+    def _channel_status(self) -> dict[str, dict]:
+        labels = channel_labels(self.cfg)
+        out: dict[str, dict] = {}
+        for ch in list_channel_ids(self.cfg):
+            sm = self._sm(ch)
+            data = sm.state.to_dict()
+            data["phase"] = sm.resolve_phase()
+            data["command"] = prefix_ble_command(
+                ch, self.commands.get(data["phase"]) or ""
+            )
+            data["label"] = labels.get(ch, ch)
+            data["active_sessions"] = sm.session_count()
+            out[ch] = data
+        return out
+
     def status(self) -> dict:
         with self._lock:
-            data = self.sm.state.to_dict()
-            data["phase"] = self.sm.resolve_phase()
-            data["command"] = self.commands.get(data["phase"])
+            channels = self._channel_status()
+            ch1 = channels.get("1", {})
+            data = dict(ch1)
+            data["phase"] = ch1.get("phase", "idle")
+            data["command"] = ch1.get("command")
+            data["channels"] = channels
+            data["client_routes"] = client_routes_payload(self.cfg)
             data["dry_run"] = self.dry_run
             data["ble"] = self.ble.status() if not self.dry_run else {}
             data["ble_ok"] = self._last_ble_ok
             data["ble_message"] = self._last_ble_msg
             data["default_device"] = self.device_alias
-            data["active_sessions"] = self.sm.session_count()
+            data["active_sessions"] = ch1.get("active_sessions", 0)
             data["auth_required"] = auth_required(self.cfg)
             data["ble_keepalive"] = {
                 "interval_sec": self._keepalive_sec,
@@ -360,7 +458,10 @@ class Daemon:
                 self.device_alias = new_alias
                 self.cfg["default_device"] = new_alias
             self.sm.reset()
-            self.current_phase = "idle"
+            for sm in self._sms.values():
+                sm.reset()
+            for ch in self._channel_phases:
+                self._channel_phases[ch] = "idle"
 
         switch_ok, switch_msg = True, "dry_run"
         test_resp = ""
@@ -372,6 +473,7 @@ class Daemon:
                     self._last_ble_ok = True
                     self._last_ble_msg = test_resp
                 self.ble.send("MODE ALL_OFF", timeout=2.0)
+                self.ble.send("CH2 MODE ALL_OFF", timeout=2.0)
 
         return {
             "ok": switch_ok,
@@ -391,7 +493,10 @@ class Daemon:
             self.device_alias = alias
             self.cfg["default_device"] = alias
             self.sm.reset()
-            self.current_phase = "idle"
+            for sm in self._sms.values():
+                sm.reset()
+            for ch in self._channel_phases:
+                self._channel_phases[ch] = "idle"
 
         if self.dry_run:
             return {"ok": True, "alias": alias}
@@ -439,9 +544,12 @@ class Daemon:
         while True:
             time.sleep(1.0)
             with self._lock:
-                new_phase = self.sm.tick()
-                if new_phase and new_phase != self.current_phase:
-                    self._apply_phase(new_phase, async_send=True)
+                for ch in list_channel_ids(self.cfg):
+                    sm = self._sm(ch)
+                    new_phase = sm.tick()
+                    prev = self._channel_phases.get(ch, "idle")
+                    if new_phase and new_phase != prev:
+                        self._apply_phase(ch, new_phase, async_send=True)
 
     def _keepalive_loop(self) -> None:
         while True:
@@ -462,7 +570,7 @@ class Daemon:
                     self._last_ble_msg = msg
                     self._record_event(
                         "ble_keepalive_fail",
-                        self.current_phase,
+                        self._channel_phases.get("1", "idle"),
                         source="system",
                         detail=msg,
                     )
@@ -579,9 +687,17 @@ def make_handler(daemon: Daemon):
                     return
                 session_id = (payload.get("session_id") or "").strip() or None
                 source = (payload.get("source") or "hook").strip() or "hook"
+                client_id = (payload.get("client_id") or "").strip() or None
+                channel = (payload.get("channel") or "").strip() or None
                 self._json(
                     200,
-                    daemon.handle_event(event, session_id=session_id, source=source),
+                    daemon.handle_event(
+                        event,
+                        session_id=session_id,
+                        source=source,
+                        client_id=client_id,
+                        channel=channel,
+                    ),
                 )
                 return
             if path == "/api/command":
@@ -590,7 +706,14 @@ def make_handler(daemon: Daemon):
                     self._json(400, {"error": "command required"})
                     return
                 device = (payload.get("device") or "").strip() or None
-                result = daemon.send_command(command, device_alias=device)
+                client_id = (payload.get("client_id") or "").strip() or None
+                channel = (payload.get("channel") or "").strip() or None
+                result = daemon.send_command(
+                    command,
+                    device_alias=device,
+                    client_id=client_id,
+                    channel=channel,
+                )
                 self._json(200 if result.get("ok") else 502, result)
                 return
             if path == "/api/devices/scan":

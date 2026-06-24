@@ -1,6 +1,7 @@
 {
   "enabled": true,
-  "default_device": "lab-main",
+  "client_id": "slot-a",
+  "default_device": "ailight-5f9a-5f9a",
   "devices_config": "devices.json",
   "daemon_host": "127.0.0.1",
   "daemon_port": 7801,

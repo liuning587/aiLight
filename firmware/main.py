@@ -300,6 +300,89 @@ def _parse_int(value, default_value):
         return default_value
 
 
+def _handle_light_command(parts, light):
+    """Parse command tokens (without CH prefix) for one TrafficLight."""
+    if not parts:
+        return "ERR EMPTY"
+    if parts[0] == "HELP":
+        return (
+            "OK CMDS: [CH1|CH2] MODE <AUTO|MANUAL|FLASH_YELLOW|THINK_SLOW|"
+            "ALL_OFF|WAIT|DONE>; "
+            "SET <RED|YELLOW|GREEN> <ON|OFF>; "
+            "BLINK <RED|YELLOW|GREEN> <TIMES> <PERIOD_MS>; STATUS; MAC; "
+            "POLARITY <HIGH|LOW>"
+        )
+    if parts[0] == "MODE" and len(parts) >= 2:
+        mode = parts[1]
+        if mode in (
+            "AUTO",
+            "MANUAL",
+            "FLASH_YELLOW",
+            "THINK_SLOW",
+            "ALL_OFF",
+            "WAIT",
+            "DONE",
+        ):
+            light.set_mode(mode)
+            return "OK MODE {}".format(mode)
+        return "ERR MODE"
+    if parts[0] == "SET" and len(parts) >= 3:
+        color = parts[1]
+        if color in ("RED", "YELLOW", "GREEN"):
+            onoff = 1 if parts[2] == "ON" else 0
+            light.set_mode("MANUAL")
+            light.set_named(color, onoff)
+            return "OK SET {} {}".format(color, parts[2])
+        return "ERR COLOR"
+    if parts[0] == "BLINK" and len(parts) >= 4:
+        color = parts[1]
+        times = _parse_int(parts[2], 3)
+        period_ms = _parse_int(parts[3], 300)
+        if color in ("RED", "YELLOW", "GREEN"):
+            light.blink(color, times, period_ms)
+            return "OK BLINK {} {} {}".format(color, times, period_ms)
+        return "ERR COLOR"
+    if parts[0] == "STATUS":
+        return "OK " + light.status()
+    if parts[0] == "POLARITY" and len(parts) >= 2:
+        if parts[1] == "HIGH":
+            light.set_polarity(True)
+            return "OK POLARITY HIGH"
+        if parts[1] == "LOW":
+            light.set_polarity(False)
+            return "OK POLARITY LOW"
+        return "ERR POLARITY"
+    return "ERR CMD"
+
+
+def _dispatch_command(cmd, lights, ble_name, mac_text):
+    parts = cmd.strip().upper().split()
+    if not parts:
+        return "ERR EMPTY"
+    if parts[0] == "MAC":
+        return "OK NAME={} MAC={}".format(ble_name, mac_text)
+    if parts[0] == "POLARITY" and len(parts) >= 2:
+        if parts[1] == "HIGH":
+            for light in lights:
+                light.set_polarity(True)
+            return "OK POLARITY HIGH"
+        if parts[1] == "LOW":
+            for light in lights:
+                light.set_polarity(False)
+            return "OK POLARITY LOW"
+        return "ERR POLARITY"
+    if parts[0] == "STATUS":
+        if len(parts) >= 2 and parts[1] in ("CH1", "CH2"):
+            idx = 0 if parts[1] == "CH1" else 1
+            return "OK " + lights[idx].status()
+        return "OK CH1 {} | CH2 {}".format(lights[0].status(), lights[1].status())
+    if parts[0] == "CH1":
+        return _handle_light_command(parts[1:], lights[0])
+    if parts[0] == "CH2":
+        return _handle_light_command(parts[1:], lights[1])
+    return _handle_light_command(parts, lights[0])
+
+
 def main():
     ble = bluetooth.BLE()
     ble.active(True)
@@ -310,75 +393,27 @@ def main():
     )
     ble_name = "aiLight-{}".format(mac_suffix)
     uart = BleUart(ble, name=ble_name)
-    light = TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True)
-    light.set_mode("ALL_OFF")
-    uart.write_line("READY {} MAC={}".format(ble_name, mac_text))
+    # CH2: red/green swapped vs silk R-Y-G on GPIO5/6/7; GPIO8 held LOW (aux GND).
+    aux_low = machine.Pin(8, machine.Pin.OUT)
+    aux_low.value(0)
+    lights = [
+        TrafficLight(red_pin=4, yellow_pin=3, green_pin=2, active_high=True),
+        TrafficLight(red_pin=7, yellow_pin=6, green_pin=5, active_high=True),
+    ]
+    for light in lights:
+        light.set_mode("ALL_OFF")
+    uart.write_line("READY {} MAC={} CH=2".format(ble_name, mac_text))
 
     while True:
         cmd = uart.read_line()
         if cmd:
-            parts = cmd.strip().upper().split()
-            response = "ERR UNKNOWN"
-            if not parts:
-                response = "ERR EMPTY"
-            elif parts[0] == "HELP":
-                response = (
-                    "OK CMDS: MODE <AUTO|MANUAL|FLASH_YELLOW|THINK_SLOW|ALL_OFF|WAIT|DONE>; "
-                    "SET <RED|YELLOW|GREEN> <ON|OFF>; "
-                    "BLINK <RED|YELLOW|GREEN> <TIMES> <PERIOD_MS>; STATUS; MAC"
-                )
-            elif parts[0] == "MODE" and len(parts) >= 2:
-                mode = parts[1]
-                if mode in (
-                    "AUTO",
-                    "MANUAL",
-                    "FLASH_YELLOW",
-                    "THINK_SLOW",
-                    "ALL_OFF",
-                    "WAIT",
-                    "DONE",
-                ):
-                    light.set_mode(mode)
-                    response = "OK MODE {}".format(mode)
-                else:
-                    response = "ERR MODE"
-            elif parts[0] == "SET" and len(parts) >= 3:
-                color = parts[1]
-                if color in ("RED", "YELLOW", "GREEN"):
-                    onoff = 1 if parts[2] == "ON" else 0
-                    light.set_mode("MANUAL")
-                    light.set_named(color, onoff)
-                    response = "OK SET {} {}".format(color, parts[2])
-                else:
-                    response = "ERR COLOR"
-            elif parts[0] == "BLINK" and len(parts) >= 4:
-                color = parts[1]
-                times = _parse_int(parts[2], 3)
-                period_ms = _parse_int(parts[3], 300)
-                if color in ("RED", "YELLOW", "GREEN"):
-                    light.blink(color, times, period_ms)
-                    response = "OK BLINK {} {} {}".format(color, times, period_ms)
-                else:
-                    response = "ERR COLOR"
-            elif parts[0] == "STATUS":
-                response = "OK " + light.status()
-            elif parts[0] == "MAC":
-                response = "OK NAME={} MAC={}".format(ble_name, mac_text)
-            elif parts[0] == "POLARITY" and len(parts) >= 2:
-                if parts[1] == "HIGH":
-                    light.set_polarity(True)
-                    response = "OK POLARITY HIGH"
-                elif parts[1] == "LOW":
-                    light.set_polarity(False)
-                    response = "OK POLARITY LOW"
-                else:
-                    response = "ERR POLARITY"
-            else:
-                response = "ERR CMD"
-
+            response = _dispatch_command(cmd, lights, ble_name, mac_text)
+            if response == "ERR CMD":
+                response = "ERR UNKNOWN"
             uart.write_line(response)
 
-        light.tick()
+        for light in lights:
+            light.tick()
         time.sleep_ms(10)
 
 

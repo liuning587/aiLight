@@ -147,6 +147,26 @@ class StateMachine:
         self._debug_phase = None
         self._debug_until = 0.0
 
+    def _clear_stale_for_event(self, event: str, now: float) -> None:
+        """Drop expired timers so the new event wins immediately."""
+        if event in ("thinking", "busy", "waiting"):
+            self.state.error_until = 0.0
+            self.state.done_until = 0.0
+        elif event == "user_prompt":
+            self.state.error_until = 0.0
+            self.state.done_until = 0.0
+        elif event == "tool_failure":
+            self.state.done_until = 0.0
+        elif event in ("tool_start", "session_start"):
+            self.state.done_until = 0.0
+            if event == "session_start":
+                self.state.error_until = 0.0
+        elif event == "session_stop":
+            self.state.error_until = 0.0
+        elif event == "force_idle":
+            self.state.error_until = 0.0
+            self.state.done_until = 0.0
+
     def _dec_waiting(self, sess: SessionState, now: float) -> None:
         if sess.waiting_count > 0:
             sess.waiting_count -= 1
@@ -195,6 +215,10 @@ class StateMachine:
         self._expire_busy(now)
         if self._debug_until and now >= self._debug_until:
             self._clear_debug()
+        # Web debug overlay must not block later test buttons (done / error / idle).
+        if event not in ("thinking", "busy", "waiting"):
+            self._clear_debug()
+        self._clear_stale_for_event(event, now)
         prev = self.resolve_phase(now)
         sid = self._sid(session_id)
 
@@ -276,6 +300,9 @@ class StateMachine:
             "waiting",
             "force_idle",
             "session_stop",
+            "session_start",
+            "user_prompt",
+            "tool_failure",
         ):
             return new_phase, "no_change"
         return new_phase, None

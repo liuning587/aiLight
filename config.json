@@ -9,8 +9,23 @@
   "busy_timeout_sec": 120,
   "ble_keepalive_sec": 30,
   "event_log_max": 100,
-  "default_device": "lab-main",
+  "default_device": "ailight-5f9a-5f9a",
   "devices_config": "devices.json",
+  "default_channel": "1",
+  "channels": {
+    "1": {
+      "label": "灯位 A",
+      "gpio": "GPIO2/3/4"
+    },
+    "2": {
+      "label": "灯位 B",
+      "gpio": "R7/Y6/G5, GPIO8=LOW"
+    }
+  },
+  "client_routes": {
+    "slot-a": "1",
+    "slot-b": "2"
+  },
   "state_commands": {
     "idle": "MODE ALL_OFF",
     "thinking": "MODE THINK_SLOW",

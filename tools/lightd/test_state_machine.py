@@ -5,6 +5,7 @@ import time
 from tools.lightd.state_machine import (
     STATE_BUSY,
     STATE_DONE,
+    STATE_ERROR,
     STATE_THINKING,
     STATE_WAITING,
     StateMachine,
@@ -52,6 +53,54 @@ def test_web_debug_overlay_keeps_sessions():
     sm.apply("thinking")
     assert sm.resolve_phase() == STATE_THINKING
     assert sm.state.busy_count == 1
+
+
+def test_web_debug_session_stop_clears_overlay():
+    sm = StateMachine(done_timeout_sec=60)
+    sm.apply("busy")
+    assert sm.resolve_phase() == STATE_BUSY
+    sm.apply("session_stop")
+    assert sm.resolve_phase() == STATE_DONE
+
+
+def test_web_debug_tool_failure_clears_overlay():
+    sm = StateMachine()
+    sm.apply("busy")
+    assert sm.resolve_phase() == STATE_BUSY
+    sm.apply("tool_failure")
+    assert sm.resolve_phase() == STATE_ERROR
+
+
+def test_error_then_session_stop_shows_done():
+    sm = StateMachine(done_timeout_sec=60)
+    sm.apply("tool_failure")
+    assert sm.resolve_phase() == STATE_ERROR
+    sm.apply("session_stop")
+    assert sm.resolve_phase() == STATE_DONE
+
+
+def test_done_then_tool_failure_shows_error():
+    sm = StateMachine(done_timeout_sec=60)
+    sm.apply("session_stop")
+    assert sm.resolve_phase() == STATE_DONE
+    phase, reason = sm.apply("tool_failure")
+    assert reason is None
+    assert phase == STATE_ERROR
+
+
+def test_tool_failure_resends_while_already_error():
+    sm = StateMachine()
+    sm.apply("tool_failure")
+    phase, reason = sm.apply("tool_failure")
+    assert reason is None
+    assert phase == STATE_ERROR
+
+
+def test_user_prompt_after_error_shows_thinking():
+    sm = StateMachine()
+    sm.apply("tool_failure")
+    sm.apply("user_prompt", session_id="a")
+    assert sm.resolve_phase() == STATE_THINKING
 
 
 def test_busy_timeout_clears_stale_busy():

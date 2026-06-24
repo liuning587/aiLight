@@ -20,6 +20,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from tools.light_client import send_command  # noqa: E402
+from tools.lightd.channels import prefix_ble_command, resolve_channel  # noqa: E402
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
 
@@ -176,10 +177,19 @@ def _emit_response(
     print(json.dumps(payload, ensure_ascii=False))
 
 
+def _client_id() -> str:
+    hook_cfg = _load_json(_hook_config_path())
+    env_id = os.environ.get("AILIGHT_CLIENT_ID", "").strip()
+    return str(hook_cfg.get("client_id") or env_id or "").strip()
+
+
 def _post_daemon(event: str, session_id: str | None = None) -> tuple[bool, str]:
     body_obj: dict = {"event": event}
     if session_id:
         body_obj["session_id"] = session_id
+    cid = _client_id()
+    if cid:
+        body_obj["client_id"] = cid
     body = json.dumps(body_obj).encode("utf-8")
     req = urllib.request.Request(
         _daemon_url(),
@@ -212,6 +222,9 @@ def _post_daemon_command(
     body_obj: dict = {"command": command}
     if device_alias:
         body_obj["device"] = device_alias
+    cid = _client_id()
+    if cid:
+        body_obj["client_id"] = cid
     body = json.dumps(body_obj).encode("utf-8")
     req = urllib.request.Request(
         _daemon_command_url(),
@@ -254,6 +267,8 @@ def _fallback_ble(event: str) -> tuple[bool, str]:
     cmd = commands.get(phase)
     if not cmd:
         return False, f"no fallback command for {phase}"
+    ch = resolve_channel(cfg, _client_id())
+    cmd = prefix_ble_command(ch, cmd)
     alias = os.environ.get("AILIGHT_DEVICE") or hook_cfg.get("default_device")
     code, out, err = send_command(cmd, device_alias=alias)
     return code == 0, out or err
