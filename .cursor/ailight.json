@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "client_id": "slot-a",
-  "default_device": "ailight-5f9a-5f9a",
+  "default_device": "ailight-bd92-bd92",
   "devices_config": "devices.json",
   "daemon_host": "127.0.0.1",
   "daemon_port": 7801,

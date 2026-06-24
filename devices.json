@@ -1,31 +1,27 @@
 {
   "default_timeout": 8.0,
-  "default_device": "ailight-5f9a-5f9a",
+  "default_device": "ailight-bd92-bd92",
   "devices": {
-    "lab-main": {
-      "name": "aiLight-BD92",
+    "ailight-b46a-b46a": {
+      "name": "aiLight-B46A",
       "name_prefix": "aiLight",
-      "address": "88:56:A6:60:BD:92",
-      "timeout": 8.0
-    },
-    "lab-a": {
-      "name": "TL-A",
-      "name_prefix": "TL-A",
-      "address": "",
-      "timeout": 8.0
-    },
-    "lab-b": {
-      "name": "TL-B",
-      "name_prefix": "TL-B",
-      "address": "",
-      "timeout": 8.0
+      "address": "7C:4F:AD:CF:B4:6A",
+      "timeout": 8.0,
+      "bound_at": "2026-06-24T13:33:00.112133+00:00"
     },
     "ailight-5f9a-5f9a": {
       "name": "aiLight-5F9A",
       "name_prefix": "aiLight",
       "address": "90:64:9B:ED:5F:9A",
       "timeout": 8.0,
-      "bound_at": "2026-06-24T12:11:53.994315+00:00"
+      "bound_at": "2026-06-24T13:34:17.416298+00:00"
+    },
+    "ailight-bd92-bd92": {
+      "name": "aiLight-BD92",
+      "name_prefix": "aiLight",
+      "address": "88:56:A6:60:BD:92",
+      "timeout": 8.0,
+      "bound_at": "2026-06-24T13:34:49.133767+00:00"
     }
   }
 }

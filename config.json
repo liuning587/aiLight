@@ -9,7 +9,7 @@
   "busy_timeout_sec": 120,
   "ble_keepalive_sec": 30,
   "event_log_max": 100,
-  "default_device": "ailight-5f9a-5f9a",
+  "default_device": "ailight-bd92-bd92",
   "devices_config": "devices.json",
   "default_channel": "1",
   "channels": {
