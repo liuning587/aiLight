@@ -95,11 +95,28 @@ def delete_device(devices_path: str, alias: str) -> dict:
     return cfg
 
 
+def _sync_hook_default(project_root: str, alias: str) -> None:
+    for rel in (".cursor/ailight.json", ".trae/ailight.json"):
+        path = os.path.join(project_root, rel)
+        if not os.path.exists(path):
+            continue
+        hook_cfg = _load_json_file(path)
+        if isinstance(hook_cfg, dict):
+            hook_cfg["default_device"] = alias
+            _atomic_write_json(path, hook_cfg)
+
+
+def _load_json_file(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else {}
+
+
 def set_default_everywhere(
     alias: str,
     devices_path: str,
     app_config_path: str,
-    hook_config_path: str | None = None,
+    project_root: str | None = None,
 ) -> None:
     cfg = load_devices_config(devices_path)
     devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
@@ -109,18 +126,15 @@ def set_default_everywhere(
     save_devices_config(devices_path, cfg)
 
     if os.path.exists(app_config_path):
-        with open(app_config_path, "r", encoding="utf-8") as f:
-            app_cfg = json.load(f)
+        app_cfg = _load_json_file(app_config_path)
         if isinstance(app_cfg, dict):
             app_cfg["default_device"] = alias
             _atomic_write_json(app_config_path, app_cfg)
 
-    if hook_config_path and os.path.exists(hook_config_path):
-        with open(hook_config_path, "r", encoding="utf-8") as f:
-            hook_cfg = json.load(f)
-        if isinstance(hook_cfg, dict):
-            hook_cfg["default_device"] = alias
-            _atomic_write_json(hook_config_path, hook_cfg)
+    root = project_root or os.path.abspath(
+        os.path.join(os.path.dirname(devices_path), ".")
+    )
+    _sync_hook_default(root, alias)
 
 
 def list_devices_summary(

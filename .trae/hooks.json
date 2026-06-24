@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py session_start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py prompt",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "RunCommand|Write|Edit|Glob|Grep|LS|WebSearch|WebFetch|Skill|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py tool_start",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "RunCommand|Write|Edit|Glob|Grep|LS|WebSearch|WebFetch|Skill|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py post_tool",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py session_stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python tools/ailight_hook.py notification",
+            "timeout": 8
+          }
+        ]
+      }
+    ]
+  }
+}

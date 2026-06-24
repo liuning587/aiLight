@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cursor project hook entry -> tools.ailight_hook"""
+"""TRAE IDE project hook entry -> tools.ailight_hook"""
 
 from __future__ import annotations
 

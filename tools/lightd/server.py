@@ -19,7 +19,6 @@ from tools.lightd.devices_store import (
 from tools.lightd.state_machine import StateMachine
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-HOOK_CONFIG_PATH = os.path.join(PROJECT_ROOT, ".cursor", "ailight.json")
 _CONSOLE_HTML_PATH = os.path.join(os.path.dirname(__file__), "console.html")
 
 
@@ -196,7 +195,7 @@ class Daemon:
                     new_alias,
                     self.devices_config,
                     _config_path(),
-                    HOOK_CONFIG_PATH,
+                    PROJECT_ROOT,
                 )
                 self.device_alias = new_alias
                 self.cfg["default_device"] = new_alias
@@ -227,7 +226,7 @@ class Daemon:
                 alias,
                 self.devices_config,
                 _config_path(),
-                HOOK_CONFIG_PATH,
+                PROJECT_ROOT,
             )
             self.device_alias = alias
             self.cfg["default_device"] = alias
@@ -265,7 +264,7 @@ class Daemon:
                     new_default,
                     self.devices_config,
                     _config_path(),
-                    HOOK_CONFIG_PATH,
+                    PROJECT_ROOT,
                 )
                 self.device_alias = new_default
                 self.cfg["default_device"] = new_default

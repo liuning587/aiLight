@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "default_device": "lab-main",
+  "devices_config": "devices.json",
+  "daemon_host": "127.0.0.1",
+  "daemon_port": 7801,
+  "profile": "promlight",
+  "ide": "trae"
+}
