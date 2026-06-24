@@ -119,6 +119,7 @@ class Daemon:
         self._last_ble_ok = True
         self._last_ble_msg = ""
         self._ble_pending: str | None = None
+        self._ble_wake = threading.Event()
         self._ble_worker_thread = threading.Thread(
             target=self._ble_queue_loop, name="ailight-ble-queue", daemon=True
         )
@@ -140,6 +141,7 @@ class Daemon:
             return True, f"DRY_RUN {cmd}"
         if async_send:
             self._ble_pending = cmd
+            self._ble_wake.set()
             return True, f"QUEUED {cmd}"
         ok, msg = self.ble.send(cmd)
         self._last_ble_ok = ok
@@ -148,22 +150,23 @@ class Daemon:
 
     def _ble_queue_loop(self) -> None:
         while True:
+            self._ble_wake.wait(timeout=0.1)
+            self._ble_wake.clear()
             cmd = None
             with self._lock:
                 if self._ble_pending:
                     cmd = self._ble_pending
                     self._ble_pending = None
             if not cmd:
-                time.sleep(0.05)
                 continue
-            # Coalesce bursts: wait briefly for newer commands before sending.
-            time.sleep(0.08)
+            # Coalesce rapid hook bursts; keep short so single events stay snappy.
+            time.sleep(0.025)
             with self._lock:
                 if self._ble_pending:
                     cmd = self._ble_pending
                     self._ble_pending = None
             if not self.dry_run:
-                ok, msg = self.ble.send(cmd, timeout=6.0)
+                ok, msg = self.ble.send(cmd, timeout=2.0)
                 with self._lock:
                     self._last_ble_ok = ok
                     self._last_ble_msg = msg

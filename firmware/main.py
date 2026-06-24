@@ -185,11 +185,13 @@ class TrafficLight:
         elif mode == "FLASH_YELLOW":
             self._clear_manual()
             self._blink_period_ms = 300
-            self.set_all(0, 0, 0)
+            self.blink_state = True
+            self.set_all(0, 1, 0)
         elif mode == "THINK_SLOW":
             self._clear_manual()
             self._blink_period_ms = 1000
-            self.set_all(0, 0, 0)
+            self.blink_state = True
+            self.set_all(0, 1, 0)
         elif mode == "WAIT":
             self.mode = "MANUAL"
             self.set_only(1, 0, 0)
@@ -212,10 +214,11 @@ class TrafficLight:
         self._clear_manual()
         self.set_all(0, 0, 0)
         self.blink_remaining = times * 2
-        self.blink_state = False
+        self.blink_state = True
         self.last_blink_ms = time.ticks_ms()
         self._blink_color = color
         self._blink_period_ms = period_ms
+        self.set_named(color, 1)
 
     def _apply_auto_phase(self, name):
         if name == "RED":
@@ -368,7 +371,7 @@ def main():
             uart.write_line(response)
 
         light.tick()
-        time.sleep_ms(30)
+        time.sleep_ms(10)
 
 
 main()
