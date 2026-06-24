@@ -107,6 +107,27 @@
       vertical-align: middle; margin-right: 8px;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .conn-line { color: var(--muted); font-size: 0.82rem; margin-top: 8px; line-height: 1.45; }
+    .conn-line.err { color: #f87171; }
+    .conn-line.ok { color: #86efac; }
+    .form-grid { display: grid; gap: 10px; }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 560px) { .form-row { grid-template-columns: 1fr; } }
+    label { display: block; font-size: 0.8rem; color: var(--muted); margin-bottom: 4px; }
+    input, textarea {
+      width: 100%; padding: 8px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: #0f1419; color: var(--text);
+      font: inherit;
+    }
+    textarea { min-height: 120px; font-family: Consolas, monospace; font-size: 0.82rem; }
+    .timeline { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow-y: auto; }
+    .timeline li {
+      padding: 8px 0; border-bottom: 1px solid var(--border);
+      font-size: 0.85rem; line-height: 1.4;
+    }
+    .timeline li:last-child { border-bottom: 0; }
+    .timeline .meta { color: var(--muted); font-size: 0.75rem; font-family: monospace; }
+    .timeline .evt { font-weight: 600; }
   </style>
 </head>
 <body>
@@ -132,6 +153,7 @@
       </div>
       <button class="btn btn-sm btn-ghost" id="testBtn" onclick="testCurrent()">测试连接</button>
     </div>
+    <p class="conn-line" id="connLine">蓝牙状态检测中…</p>
   </div>
 
   <div class="card">
@@ -145,6 +167,57 @@
       <button class="btn btn-sm btn-ok" onclick="ev('session_stop')">完成·绿灯</button>
       <button class="btn btn-sm btn-err" onclick="ev('tool_failure')">出错·红闪</button>
       <button class="btn btn-sm btn-ghost" onclick="ev('force_idle')">空闲·全灭</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>事件时间线</h2>
+    <ul class="timeline" id="eventList"></ul>
+    <div class="empty" id="eventEmpty" style="display:none">暂无事件</div>
+  </div>
+
+  <div class="card">
+    <h2>守护进程配置</h2>
+    <p class="hint" style="margin-top:0">保存后立即生效（无需重启 lightd）。设置 API Token 后，Hook 与控制台请求需携带令牌。</p>
+    <div class="form-grid" id="configForm">
+      <div class="form-row">
+        <div>
+          <label for="cfgToken">API Token（留空=不启用鉴权）</label>
+          <input id="cfgToken" type="password" placeholder="本地可留空；局域网建议设置" autocomplete="off"/>
+        </div>
+        <div>
+          <label for="cfgKeepalive">BLE 保活间隔（秒）</label>
+          <input id="cfgKeepalive" type="number" min="5" step="1"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="cfgDone">完成绿灯保持（秒）</label>
+          <input id="cfgDone" type="number" min="1" step="1"/>
+        </div>
+        <div>
+          <label for="cfgWait">等待超时（秒）</label>
+          <input id="cfgWait" type="number" min="30" step="1"/>
+        </div>
+      </div>
+      <div class="form-row">
+        <div>
+          <label for="cfgError">出错红闪显示（秒）</label>
+          <input id="cfgError" type="number" min="1" step="1"/>
+        </div>
+        <div>
+          <label for="cfgDryRun">Dry Run（不发 BLE）</label>
+          <select id="cfgDryRun" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--border);background:#0f1419;color:var(--text)">
+            <option value="false">false</option>
+            <option value="true">true</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label for="cfgCommands">state_commands（JSON）</label>
+        <textarea id="cfgCommands"></textarea>
+      </div>
+      <button class="btn btn-primary" type="button" onclick="saveConfig()" style="width:auto">保存配置</button>
     </div>
   </div>
 
@@ -169,6 +242,23 @@
 
   <script>
     let scanning = false;
+    const TOKEN_KEY = 'ailight_token';
+
+    function getToken() {
+      return sessionStorage.getItem(TOKEN_KEY) || '';
+    }
+
+    function setToken(t) {
+      if (t) sessionStorage.setItem(TOKEN_KEY, t);
+      else sessionStorage.removeItem(TOKEN_KEY);
+    }
+
+    function authHeaders(extra = {}) {
+      const h = { ...extra };
+      const t = getToken();
+      if (t) h['Authorization'] = 'Bearer ' + t;
+      return h;
+    }
 
     function toast(msg, ms = 2800) {
       const el = document.getElementById('toast');
@@ -178,10 +268,45 @@
     }
 
     async function api(path, opts = {}) {
-      const r = await fetch(path, opts);
-      const j = await r.json();
+      const headers = authHeaders(opts.headers || {});
+      const r = await fetch(path, { ...opts, headers });
+      const j = await r.json().catch(() => ({}));
+      if (r.status === 401) {
+        throw new Error('未授权：请在下方配置中填写 API Token');
+      }
       if (!r.ok) throw new Error(j.error || '请求失败');
       return j;
+    }
+
+    function fmtAgo(ts) {
+      if (!ts) return '从未';
+      const sec = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+      if (sec < 5) return '刚刚';
+      if (sec < 60) return sec + ' 秒前';
+      return Math.floor(sec / 60) + ' 分钟前';
+    }
+
+    function renderConnLine(status) {
+      const el = document.getElementById('connLine');
+      const ble = status.ble || {};
+      const ka = status.ble_keepalive || {};
+      const connected = !!ble.connected;
+      const pingOk = ka.last_ok !== false && ble.keepalive_ok !== false;
+      let text = connected ? '蓝牙：已连接 GATT' : '蓝牙：未连接';
+      if (ka.interval_sec) {
+        text += ' · 保活每 ' + ka.interval_sec + 's';
+      }
+      text += ' · 上次探测 ' + fmtAgo(ka.last_at || ble.last_ping_at);
+      if (!connected) {
+        el.className = 'conn-line err';
+        text += ' · 将自动重连';
+      } else if (!pingOk && ka.last_at) {
+        el.className = 'conn-line err';
+        text += ' · 保活失败: ' + (status.ble_message || ble.last_error || '');
+      } else {
+        el.className = 'conn-line ok';
+      }
+      el.textContent = text;
     }
 
     function renderCurrent(data) {
@@ -192,7 +317,7 @@
         document.getElementById('curName').textContent = active.name || active.alias;
         document.getElementById('curAddr').textContent =
           active.alias + ' · ' + (active.address || '无 MAC');
-        dot.className = 'dot ' + (ble.connected ? 'on' : 'off');
+        dot.className = 'dot ' + (ble.connected && data.ble_ok !== false ? 'on' : 'off');
       } else {
         document.getElementById('curName').textContent = '未绑定设备';
         document.getElementById('curAddr').textContent = '请先扫描并绑定 aiLight';
@@ -243,6 +368,81 @@
       `).join('');
     }
 
+    function renderEvents(events) {
+      const list = document.getElementById('eventList');
+      const empty = document.getElementById('eventEmpty');
+      if (!events || !events.length) {
+        list.innerHTML = '';
+        empty.style.display = 'block';
+        return;
+      }
+      empty.style.display = 'none';
+      list.innerHTML = events.map(e => {
+        const t = new Date((e.ts || 0) * 1000).toLocaleTimeString();
+        const sid = e.session_id ? ' · ' + esc(e.session_id).slice(0, 12) : '';
+        return `<li><span class="meta">${t} · ${esc(e.source)}${sid}</span><br/>
+          <span class="evt">${esc(e.event)}</span> → ${esc(e.phase)}
+          ${e.detail ? '<br/><span class="meta">' + esc(e.detail) + '</span>' : ''}</li>`;
+      }).join('');
+    }
+
+    function fillConfigForm(cfg) {
+      document.getElementById('cfgKeepalive').value = cfg.ble_keepalive_sec ?? 30;
+      document.getElementById('cfgDone').value = cfg.done_timeout_sec ?? 60;
+      document.getElementById('cfgWait').value = cfg.waiting_timeout_sec ?? 300;
+      document.getElementById('cfgError').value = cfg.error_display_sec ?? 4;
+      document.getElementById('cfgDryRun').value = cfg.dry_run ? 'true' : 'false';
+      document.getElementById('cfgCommands').value = JSON.stringify(cfg.state_commands || {}, null, 2);
+      if (cfg.auth_required && !getToken()) {
+        document.getElementById('cfgToken').placeholder = '已启用鉴权，请输入 Token';
+      }
+    }
+
+    async function loadConfigForm() {
+      try {
+        const cfg = await api('/api/config');
+        fillConfigForm(cfg);
+      } catch (e) { /* ignore */ }
+    }
+
+    async function saveConfig() {
+      let commands = {};
+      try {
+        commands = JSON.parse(document.getElementById('cfgCommands').value || '{}');
+      } catch (e) {
+        toast('state_commands JSON 格式错误');
+        return;
+      }
+      const tokenInput = document.getElementById('cfgToken').value.trim();
+      if (tokenInput && tokenInput !== '******') {
+        setToken(tokenInput);
+      }
+      const body = {
+        ble_keepalive_sec: Number(document.getElementById('cfgKeepalive').value),
+        done_timeout_sec: Number(document.getElementById('cfgDone').value),
+        waiting_timeout_sec: Number(document.getElementById('cfgWait').value),
+        error_display_sec: Number(document.getElementById('cfgError').value),
+        dry_run: document.getElementById('cfgDryRun').value === 'true',
+        state_commands: commands,
+      };
+      if (tokenInput && tokenInput !== '******') {
+        body.api_token = tokenInput;
+      }
+      try {
+        const res = await api('/api/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        toast('配置已保存并生效');
+        document.getElementById('cfgToken').value = '';
+        fillConfigForm(res.config || {});
+        await refresh();
+      } catch (e) {
+        toast('保存失败: ' + e.message);
+      }
+    }
+
     function esc(s) {
       return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/'/g,'&#39;');
     }
@@ -252,10 +452,14 @@
         const status = await api('/api/status');
         document.getElementById('phase').textContent = status.phase || '-';
         document.getElementById('detail').textContent =
-          'BLE ' + (status.ble_ok ? '正常' : '异常') + ' · ' + (status.ble_message || '');
+          '会话 ' + (status.active_sessions || 0) + ' · BLE ' +
+          (status.ble_ok ? '正常' : '异常') + ' · ' + (status.ble_message || '');
+        renderConnLine(status);
         const dev = await api('/api/devices');
-        renderCurrent({ active: dev.active, ble: status.ble });
+        renderCurrent({ active: dev.active, ble: status.ble, ble_ok: status.ble_ok });
         renderSaved(dev);
+        const ev = await api('/api/events?limit=30');
+        renderEvents(ev.events || []);
       } catch (e) {
         toast('无法连接守护进程，请运行: python -m tools.lightd');
       }
@@ -349,12 +553,13 @@
       await api('/api/event', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({ event: name })
+        body: JSON.stringify({ event: name, source: 'web' })
       });
       await refresh();
     }
 
     refresh();
+    loadConfigForm();
     setInterval(refresh, 3000);
   </script>
 </body>

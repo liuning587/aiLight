@@ -23,6 +23,16 @@ _PRIORITY = {
     STATE_IDLE: 0,
 }
 
+MANUAL_SESSION = "__manual__"
+DEFAULT_SESSION = "default"
+
+
+@dataclass
+class SessionState:
+    thinking: bool = False
+    busy_count: int = 0
+    waiting_count: int = 0
+
 
 @dataclass
 class LightState:
@@ -85,7 +95,45 @@ class StateMachine:
         self.waiting_timeout_sec = waiting_timeout_sec
         self.error_display_sec = error_display_sec
         self.state = LightState()
+        self._sessions: dict[str, SessionState] = {}
         self._waiting_deadline = 0.0
+
+    def reset(self) -> None:
+        self._sessions.clear()
+        self.state.reset()
+        self._waiting_deadline = 0.0
+
+    def session_count(self) -> int:
+        return len(self._sessions)
+
+    def _sid(self, session_id: str | None) -> str:
+        sid = (session_id or DEFAULT_SESSION).strip() or DEFAULT_SESSION
+        return sid
+
+    def _session(self, session_id: str | None) -> SessionState:
+        sid = self._sid(session_id)
+        if sid not in self._sessions:
+            self._sessions[sid] = SessionState()
+        return self._sessions[sid]
+
+    def _sync_aggregate(self) -> None:
+        if not self._sessions:
+            self.state.thinking = False
+            self.state.busy_count = 0
+            self.state.waiting_count = 0
+            return
+        self.state.thinking = any(s.thinking for s in self._sessions.values())
+        self.state.busy_count = sum(s.busy_count for s in self._sessions.values())
+        self.state.waiting_count = sum(s.waiting_count for s in self._sessions.values())
+
+    def _dec_waiting(self, sess: SessionState, now: float) -> None:
+        if sess.waiting_count > 0:
+            sess.waiting_count -= 1
+        self._sync_aggregate()
+        if self.state.waiting_count == 0:
+            self._waiting_deadline = 0.0
+        elif not self._waiting_deadline:
+            self._waiting_deadline = now + self.waiting_timeout_sec
 
     def _touch(self, event: str) -> None:
         self.state.last_event = event
@@ -97,63 +145,93 @@ class StateMachine:
             and self._waiting_deadline
             and now > self._waiting_deadline
         ):
-            self.state.waiting_count = 0
+            for sess in self._sessions.values():
+                sess.waiting_count = 0
+            self._sync_aggregate()
             self._waiting_deadline = 0.0
 
-    def apply(self, event: str) -> tuple[str, str | None]:
+    def apply(
+        self, event: str, session_id: str | None = None
+    ) -> tuple[str, str | None]:
         """Return (resolved_phase, reason_if_no_change)."""
         now = time.time()
         self._expire_waiting(now)
         prev = self.state.resolve(now)
+        sid = self._sid(session_id)
 
         if event == "session_start":
-            self.state.reset()
+            self._sessions[sid] = SessionState()
+            self.state.done_until = 0.0
+            self._sync_aggregate()
         elif event == "user_prompt":
-            self.state.thinking = True
+            sess = self._session(session_id)
+            sess.thinking = True
             self.state.done_until = 0.0
+            self._sync_aggregate()
         elif event == "thinking":
-            # Web console manual test button
-            self.state.reset()
-            self.state.thinking = True
-        elif event == "busy":
-            # Web console manual test button
-            self.state.reset()
-            self.state.busy_count = 1
-        elif event == "waiting":
-            # Web console manual test button
-            self.state.reset()
-            self.state.waiting_count = 1
-            self._waiting_deadline = now + self.waiting_timeout_sec
-        elif event == "tool_start":
-            self.state.thinking = False
-            self.state.busy_count += 1
+            self._sessions.clear()
+            self._sessions[MANUAL_SESSION] = SessionState(thinking=True)
             self.state.done_until = 0.0
-        elif event == "tool_success":
-            if self.state.busy_count > 0:
-                self.state.busy_count -= 1
-            if self.state.busy_count == 0:
-                self.state.thinking = True
-        elif event == "permission_wait":
-            self.state.waiting_count += 1
+            self._sync_aggregate()
+        elif event == "busy":
+            self._sessions.clear()
+            self._sessions[MANUAL_SESSION] = SessionState(busy_count=1)
+            self.state.done_until = 0.0
+            self._sync_aggregate()
+        elif event == "waiting":
+            self._sessions.clear()
+            manual = SessionState(waiting_count=1)
+            self._sessions[MANUAL_SESSION] = manual
             self._waiting_deadline = now + self.waiting_timeout_sec
+            self._sync_aggregate()
+        elif event == "tool_start":
+            sess = self._session(session_id)
+            if sess.waiting_count > 0:
+                sess.waiting_count -= 1
+            sess.thinking = False
+            sess.busy_count += 1
+            self.state.done_until = 0.0
+            self._sync_aggregate()
+            if self.state.waiting_count > 0 and not self._waiting_deadline:
+                self._waiting_deadline = now + self.waiting_timeout_sec
+            elif self.state.waiting_count == 0:
+                self._waiting_deadline = 0.0
+        elif event == "tool_success":
+            sess = self._session(session_id)
+            if sess.busy_count > 0:
+                sess.busy_count -= 1
+            if sess.busy_count == 0:
+                sess.thinking = True
+            self._sync_aggregate()
+        elif event == "permission_wait":
+            sess = self._session(session_id)
+            sess.waiting_count += 1
+            self._waiting_deadline = now + self.waiting_timeout_sec
+            self._sync_aggregate()
         elif event == "permission_done":
-            if self.state.waiting_count > 0:
-                self.state.waiting_count -= 1
+            sess = self._session(session_id)
+            self._dec_waiting(sess, now)
+        elif event == "session_stop":
+            if sid in self._sessions:
+                del self._sessions[sid]
+            self._sync_aggregate()
             if self.state.waiting_count == 0:
                 self._waiting_deadline = 0.0
-        elif event == "session_stop":
-            self.state.thinking = False
-            self.state.busy_count = 0
-            self.state.waiting_count = 0
-            self._waiting_deadline = 0.0
-            self.state.done_until = now + self.done_timeout_sec
+            if (
+                self.state.busy_count == 0
+                and self.state.waiting_count == 0
+                and not self.state.thinking
+            ):
+                self.state.done_until = now + self.done_timeout_sec
         elif event == "tool_failure":
-            self.state.thinking = False
-            if self.state.busy_count > 0:
-                self.state.busy_count -= 1
+            sess = self._session(session_id)
+            sess.thinking = False
+            if sess.busy_count > 0:
+                sess.busy_count -= 1
             self.state.error_until = now + self.error_display_sec
+            self._sync_aggregate()
         elif event == "force_idle":
-            self.state.reset()
+            self.reset()
         else:
             return prev, f"unknown event: {event}"
 
@@ -162,10 +240,12 @@ class StateMachine:
         if new_phase == prev and event not in (
             "tool_start",
             "permission_wait",
+            "permission_done",
             "thinking",
             "busy",
             "waiting",
             "force_idle",
+            "session_stop",
         ):
             return new_phase, "no_change"
         return new_phase, None

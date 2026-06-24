@@ -47,14 +47,12 @@
     "preToolUse": [
       {
         "command": "python .cursor/hooks/ailight_hook.py tool_start",
-        "matcher": "Shell|Write|Task",
         "timeout": 8
       }
     ],
     "postToolUse": [
       {
         "command": "python .cursor/hooks/ailight_hook.py tool_success",
-        "matcher": "Shell|Write|Task",
         "timeout": 8
       }
     ],

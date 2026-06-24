@@ -9,6 +9,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
+from tools.lightd.auth import (
+    PUBLIC_PATHS,
+    auth_required,
+    check_auth,
+    redact_config,
+)
 from tools.lightd.ble_worker import BleWorker
 from tools.lightd.devices_store import (
     bind_device,
@@ -17,9 +23,22 @@ from tools.lightd.devices_store import (
     set_default_everywhere,
 )
 from tools.lightd.paths import project_root, resource_path
+from tools.lightd.event_log import EventLog
 from tools.lightd.state_machine import StateMachine
 
 _DOCS_MD_CANDIDATES = ("docs/使用说明.md",)
+_CONFIG_HOT_KEYS = frozenset(
+    {
+        "done_timeout_sec",
+        "waiting_timeout_sec",
+        "error_display_sec",
+        "state_commands",
+        "dry_run",
+        "ble_keepalive_sec",
+        "api_token",
+        "event_log_max",
+    }
+)
 
 
 def _config_path() -> str:
@@ -103,6 +122,10 @@ class Daemon:
         self.commands = cfg.get("state_commands") or {}
         self.dry_run = bool(cfg.get("dry_run", False))
         self.device_alias = cfg.get("default_device")
+        self.event_log = EventLog(maxlen=int(cfg.get("event_log_max", 100)))
+        self._keepalive_sec = float(cfg.get("ble_keepalive_sec", 30))
+        self._last_keepalive_at = 0.0
+        self._keepalive_ok = True
         devices_cfg = cfg.get("devices_config", "devices.json")
         self.devices_config = (
             devices_cfg
@@ -128,6 +151,37 @@ class Daemon:
             target=self._tick_loop, name="ailight-ticker", daemon=True
         )
         self._ticker.start()
+        self._keepalive = threading.Thread(
+            target=self._keepalive_loop, name="ailight-keepalive", daemon=True
+        )
+        if not self.dry_run:
+            self._keepalive.start()
+
+    def apply_config(self, cfg: dict) -> None:
+        with self._lock:
+            self.cfg = cfg
+            self.sm.done_timeout_sec = float(cfg.get("done_timeout_sec", 60))
+            self.sm.waiting_timeout_sec = float(cfg.get("waiting_timeout_sec", 300))
+            self.sm.error_display_sec = float(cfg.get("error_display_sec", 4))
+            self.commands = cfg.get("state_commands") or {}
+            self.dry_run = bool(cfg.get("dry_run", False))
+            self._keepalive_sec = float(cfg.get("ble_keepalive_sec", 30))
+
+    def _record_event(
+        self,
+        event: str,
+        phase: str,
+        session_id: str | None = None,
+        source: str = "hook",
+        detail: str = "",
+    ) -> None:
+        self.event_log.add(
+            event=event,
+            phase=phase,
+            session_id=session_id,
+            source=source,
+            detail=detail,
+        )
 
     def _apply_phase(self, phase: str, async_send: bool = False) -> tuple[bool, str]:
         cmd = self.commands.get(phase)
@@ -169,10 +223,18 @@ class Daemon:
                     self._last_ble_ok = ok
                     self._last_ble_msg = msg
 
-    def handle_event(self, event: str) -> dict:
+    def handle_event(
+        self,
+        event: str,
+        session_id: str | None = None,
+        source: str = "hook",
+    ) -> dict:
         with self._lock:
-            phase, reason = self.sm.apply(event)
+            phase, reason = self.sm.apply(event, session_id=session_id)
             if reason == "no_change":
+                self._record_event(
+                    event, phase, session_id=session_id, source=source, detail=reason
+                )
                 return {
                     "ok": True,
                     "phase": phase,
@@ -181,6 +243,9 @@ class Daemon:
                     "ble_ok": self._last_ble_ok,
                 }
             ok, msg = self._apply_phase(phase, async_send=True)
+            self._record_event(
+                event, phase, session_id=session_id, source=source, detail=msg
+            )
             return {
                 "ok": ok,
                 "phase": phase,
@@ -188,6 +253,36 @@ class Daemon:
                 "command": self.commands.get(phase),
                 "queued": True,
                 "ble_message": msg,
+            }
+
+    def send_command(self, command: str, device_alias: str | None = None) -> dict:
+        command = (command or "").strip()
+        if not command:
+            return {"ok": False, "error": "command required"}
+        with self._lock:
+            if self.dry_run:
+                return {"ok": True, "response": f"DRY_RUN {command}"}
+            target = (device_alias or "").strip() or None
+            if target and target != self.device_alias:
+                set_default_everywhere(
+                    target,
+                    self.devices_config,
+                    _config_path(),
+                    project_root(),
+                )
+                self.device_alias = target
+                self.cfg["default_device"] = target
+                ok_sw, msg_sw = self.ble.switch_device(target)
+                if not ok_sw:
+                    return {"ok": False, "error": msg_sw}
+            ok, msg = self.ble.send(command)
+            self._last_ble_ok = ok
+            self._last_ble_msg = msg
+            return {
+                "ok": ok,
+                "response": msg,
+                "ble_message": msg,
+                "error": "" if ok else msg,
             }
 
     def status(self) -> dict:
@@ -199,6 +294,16 @@ class Daemon:
             data["ble_ok"] = self._last_ble_ok
             data["ble_message"] = self._last_ble_msg
             data["default_device"] = self.device_alias
+            data["active_sessions"] = self.sm.session_count()
+            data["auth_required"] = auth_required(self.cfg)
+            data["ble_keepalive"] = {
+                "interval_sec": self._keepalive_sec,
+                "last_at": self._last_keepalive_at,
+                "last_ok": self._keepalive_ok,
+            }
+            if data["ble"]:
+                data["ble"]["keepalive_ok"] = self._keepalive_ok
+                data["ble"]["keepalive_at"] = self._last_keepalive_at
             return data
 
     def devices_payload(self) -> dict:
@@ -246,7 +351,7 @@ class Daemon:
                 )
                 self.device_alias = new_alias
                 self.cfg["default_device"] = new_alias
-            self.sm.state.reset()
+            self.sm.reset()
             self.current_phase = "idle"
 
         switch_ok, switch_msg = True, "dry_run"
@@ -277,7 +382,7 @@ class Daemon:
             )
             self.device_alias = alias
             self.cfg["default_device"] = alias
-            self.sm.state.reset()
+            self.sm.reset()
             self.current_phase = "idle"
 
         if self.dry_run:
@@ -330,6 +435,32 @@ class Daemon:
                 if new_phase and new_phase != self.current_phase:
                     self._apply_phase(new_phase, async_send=True)
 
+    def _keepalive_loop(self) -> None:
+        while True:
+            with self._lock:
+                interval = max(5.0, float(self._keepalive_sec))
+            time.sleep(interval)
+            if self.dry_run:
+                continue
+            ok, msg = self.ble.ping(timeout=3.0)
+            with self._lock:
+                self._last_keepalive_at = time.time()
+                self._keepalive_ok = ok
+                if ok:
+                    self._last_ble_ok = True
+                    self._last_ble_msg = msg
+                else:
+                    self._last_ble_ok = False
+                    self._last_ble_msg = msg
+                    self._record_event(
+                        "ble_keepalive_fail",
+                        self.current_phase,
+                        source="system",
+                        detail=msg,
+                    )
+            if not ok:
+                self.ble.reconnect()
+
 
 def make_handler(daemon: Daemon):
     class Handler(BaseHTTPRequestHandler):
@@ -344,8 +475,24 @@ def make_handler(daemon: Daemon):
             self.end_headers()
             self.wfile.write(body)
 
+        def _authorized(self, path: str) -> bool:
+            if path in PUBLIC_PATHS:
+                return True
+            if check_auth(self, daemon.cfg):
+                return True
+            self._json(
+                401,
+                {
+                    "error": "unauthorized",
+                    "auth_required": auth_required(daemon.cfg),
+                },
+            )
+            return False
+
         def do_GET(self):
             path = urlparse(self.path).path
+            if not self._authorized(path):
+                return
             if path in ("/", "/index.html"):
                 body = load_console_html().encode("utf-8")
                 self.send_response(200)
@@ -370,7 +517,19 @@ def make_handler(daemon: Daemon):
                 self._json(200, daemon.status())
                 return
             if path == "/api/config":
-                self._json(200, load_config())
+                self._json(200, redact_config(load_config()))
+                return
+            if path == "/api/events":
+                limit = 50
+                parsed = urlparse(self.path)
+                if parsed.query:
+                    for part in parsed.query.split("&"):
+                        if part.startswith("limit="):
+                            try:
+                                limit = int(part.split("=", 1)[1])
+                            except ValueError:
+                                pass
+                self._json(200, {"events": daemon.event_log.list(limit=limit)})
                 return
             if path == "/api/devices":
                 self._json(200, daemon.devices_payload())
@@ -379,6 +538,8 @@ def make_handler(daemon: Daemon):
 
         def do_DELETE(self):
             path = urlparse(self.path).path
+            if not self._authorized(path):
+                return
             prefix = "/api/devices/"
             if path.startswith(prefix):
                 alias = path[len(prefix) :].strip("/")
@@ -394,6 +555,8 @@ def make_handler(daemon: Daemon):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            if not self._authorized(path):
+                return
             length = int(self.headers.get("Content-Length", "0"))
             raw = self.rfile.read(length) if length else b"{}"
             try:
@@ -406,7 +569,21 @@ def make_handler(daemon: Daemon):
                 if not event:
                     self._json(400, {"error": "event required"})
                     return
-                self._json(200, daemon.handle_event(event))
+                session_id = (payload.get("session_id") or "").strip() or None
+                source = (payload.get("source") or "hook").strip() or "hook"
+                self._json(
+                    200,
+                    daemon.handle_event(event, session_id=session_id, source=source),
+                )
+                return
+            if path == "/api/command":
+                command = (payload.get("command") or "").strip()
+                if not command:
+                    self._json(400, {"error": "command required"})
+                    return
+                device = (payload.get("device") or "").strip() or None
+                result = daemon.send_command(command, device_alias=device)
+                self._json(200 if result.get("ok") else 502, result)
                 return
             if path == "/api/devices/scan":
                 timeout = float(payload.get("timeout", 8))
@@ -440,10 +617,21 @@ def make_handler(daemon: Daemon):
                 self._json(200, daemon.test_device(alias=alias))
                 return
             if path == "/api/config":
+                updates = {k: payload[k] for k in _CONFIG_HOT_KEYS if k in payload}
+                if updates.get("api_token") in ("******", ""):
+                    updates.pop("api_token", None)
                 cfg = load_config()
-                cfg.update(payload)
+                cfg.update(updates)
                 save_config(cfg)
-                self._json(200, {"ok": True, "config": cfg})
+                daemon.apply_config(cfg)
+                self._json(
+                    200,
+                    {
+                        "ok": True,
+                        "config": redact_config(cfg),
+                        "reloaded": True,
+                    },
+                )
                 return
             self._json(404, {"error": "not found"})
 

@@ -92,12 +92,40 @@ def _detect_ide(stdin_payload: dict | None = None) -> str:
     return "cursor"
 
 
-def _daemon_url() -> str:
+def _daemon_base_url() -> str:
     hook_cfg = _load_json(_hook_config_path())
     cfg = _load_json(CONFIG_PATH)
     port = int(hook_cfg.get("daemon_port") or cfg.get("web_port") or 7801)
     host = hook_cfg.get("daemon_host") or "127.0.0.1"
-    return f"http://{host}:{port}/api/event"
+    return f"http://{host}:{port}"
+
+
+def _daemon_url() -> str:
+    return f"{_daemon_base_url()}/api/event"
+
+
+def _daemon_command_url() -> str:
+    return f"{_daemon_base_url()}/api/command"
+
+
+def _is_enabled() -> bool:
+    return bool(_load_json(_hook_config_path()).get("enabled", True))
+
+
+def _api_token() -> str:
+    hook_cfg = _load_json(_hook_config_path())
+    cfg = _load_json(CONFIG_PATH)
+    return str(hook_cfg.get("api_token") or cfg.get("api_token") or "").strip()
+
+
+def _daemon_headers(content_type: bool = True) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    token = _api_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 def _emit_response(
@@ -145,12 +173,15 @@ def _emit_response(
     print(json.dumps(payload, ensure_ascii=False))
 
 
-def _post_daemon(event: str) -> tuple[bool, str]:
-    body = json.dumps({"event": event}).encode("utf-8")
+def _post_daemon(event: str, session_id: str | None = None) -> tuple[bool, str]:
+    body_obj: dict = {"event": event}
+    if session_id:
+        body_obj["session_id"] = session_id
+    body = json.dumps(body_obj).encode("utf-8")
     req = urllib.request.Request(
         _daemon_url(),
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_daemon_headers(),
         method="POST",
     )
     try:
@@ -159,6 +190,29 @@ def _post_daemon(event: str) -> tuple[bool, str]:
         if data.get("ok"):
             return True, data.get("ble_message") or data.get("phase") or "ok"
         return False, data.get("ble_message") or "daemon error"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as ex:
+        return False, str(ex)
+
+
+def _post_daemon_command(
+    command: str, device_alias: str | None = None
+) -> tuple[bool, str]:
+    body_obj: dict = {"command": command}
+    if device_alias:
+        body_obj["device"] = device_alias
+    body = json.dumps(body_obj).encode("utf-8")
+    req = urllib.request.Request(
+        _daemon_command_url(),
+        data=body,
+        headers=_daemon_headers(),
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if data.get("ok"):
+            return True, data.get("response") or data.get("ble_message") or "ok"
+        return False, data.get("error") or data.get("ble_message") or "command failed"
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as ex:
         return False, str(ex)
 
@@ -193,8 +247,9 @@ def _dispatch(
     event: str,
     ide: str = "cursor",
     trae_event: str | None = None,
+    session_id: str | None = None,
 ) -> int:
-    ok, msg = _post_daemon(event)
+    ok, msg = _post_daemon(event, session_id=session_id)
     if not ok:
         ok2, msg2 = _fallback_ble(event)
         if not ok2 and event not in ("tool_success", "permission_done"):
@@ -217,6 +272,21 @@ def _read_stdin_json() -> dict:
         return json.loads(raw)
     except Exception:
         return {}
+
+
+def _extract_session_id(payload: dict) -> str | None:
+    for key in (
+        "session_id",
+        "conversation_id",
+        "composerId",
+        "composer_id",
+        "chat_id",
+        "thread_id",
+    ):
+        value = payload.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
 
 
 def _extract_prompt(payload: dict) -> str:
@@ -298,16 +368,22 @@ def _parse_manual_command(text: str) -> str | None:
     return None
 
 
-def _handle_prompt() -> int:
-    payload = _read_stdin_json()
+def _handle_prompt(payload: dict) -> int:
     ide = _detect_ide(payload)
     trae_event = payload.get("hook_event_name") or "UserPromptSubmit"
+    session_id = _extract_session_id(payload)
     prompt = _extract_prompt(payload)
     manual = _parse_manual_command(prompt)
     if manual:
         alias = _parse_device_from_prompt(prompt)
-        code, out, err = send_command(manual, device_alias=alias)
-        if code == 0:
+        ok, out = _post_daemon_command(manual, device_alias=alias)
+        if not ok:
+            code, out_ble, err = send_command(manual, device_alias=alias)
+            if code == 0:
+                ok, out = True, out_ble
+            else:
+                out = err or out_ble or out
+        if ok:
             _emit_response(
                 ide,
                 trae_event,
@@ -318,28 +394,46 @@ def _handle_prompt() -> int:
             _emit_response(
                 ide,
                 trae_event,
-                {"user_message": f"aiLight 失败: {err or out}"},
+                {"user_message": f"aiLight 失败: {out}"},
                 notify=True,
             )
         return 0
-    return _dispatch("user_prompt", ide=ide, trae_event=trae_event)
+    return _dispatch(
+        "user_prompt", ide=ide, trae_event=trae_event, session_id=session_id
+    )
 
 
-def _handle_post_tool() -> int:
-    payload = _read_stdin_json()
+def _handle_post_tool(payload: dict) -> int:
     ide = _detect_ide(payload)
     trae_event = payload.get("hook_event_name") or "PostToolUse"
+    session_id = _extract_session_id(payload)
+    if ide == "trae":
+        _dispatch(
+            "permission_done",
+            ide=ide,
+            trae_event=trae_event,
+            session_id=session_id,
+        )
     if _tool_response_failed(payload):
-        return _dispatch("tool_failure", ide=ide, trae_event=trae_event)
-    return _dispatch("tool_success", ide=ide, trae_event=trae_event)
+        return _dispatch(
+            "tool_failure", ide=ide, trae_event=trae_event, session_id=session_id
+        )
+    return _dispatch(
+        "tool_success", ide=ide, trae_event=trae_event, session_id=session_id
+    )
 
 
-def _handle_notification() -> int:
-    payload = _read_stdin_json()
+def _handle_notification(payload: dict) -> int:
     ide = _detect_ide(payload)
+    session_id = _extract_session_id(payload)
     ntype = (payload.get("notification_type") or "").strip()
     if ntype == "permission_prompt":
-        _dispatch("permission_wait", ide=ide, trae_event="Notification")
+        _dispatch(
+            "permission_wait",
+            ide=ide,
+            trae_event="Notification",
+            session_id=session_id,
+        )
     else:
         _emit_response(ide, "Notification")
     return 0
@@ -357,20 +451,27 @@ def _handle_test() -> int:
 
 def main() -> int:
     action = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
-    if action == "prompt":
-        return _handle_prompt()
-    if action == "post_tool":
-        return _handle_post_tool()
-    if action == "notification":
-        return _handle_notification()
     if action == "test":
         return _handle_test()
+    if not _is_enabled():
+        _emit_response(_detect_ide())
+        return 0
+
+    payload = _read_stdin_json()
+    session_id = _extract_session_id(payload)
+
+    if action == "prompt":
+        return _handle_prompt(payload)
+    if action == "post_tool":
+        return _handle_post_tool(payload)
+    if action == "notification":
+        return _handle_notification(payload)
 
     event = ACTION_EVENTS.get(action)
     if event:
-        ide = _detect_ide()
+        ide = _detect_ide(payload)
         trae_event = ACTION_TRAE_EVENT.get(action)
-        return _dispatch(event, ide=ide, trae_event=trae_event)
+        return _dispatch(event, ide=ide, trae_event=trae_event, session_id=session_id)
 
     _emit_response(_detect_ide())
     return 0

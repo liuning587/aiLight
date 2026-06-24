@@ -137,6 +137,8 @@ class BleWorker:
         self._last_send = 0.0
         self._last_response = ""
         self._last_error = ""
+        self._last_ping_at = 0.0
+        self._last_ping_ok = False
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -219,6 +221,44 @@ class BleWorker:
             self._last_error = str(ex)
             return False, self._last_error
 
+    def ping(self, timeout: float = 3.0) -> tuple[bool, str]:
+        """Send STATUS to verify connection; reconnect on failure."""
+        if not self._loop:
+            self.start()
+        assert self._loop is not None and self._session is not None
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.send("STATUS", timeout=timeout),
+            self._loop,
+        )
+        try:
+            line = future.result(timeout=timeout + 4.0)
+            self._last_ping_at = time.time()
+            self._last_ping_ok = True
+            self._last_response = line or "NO_RESPONSE"
+            self._last_error = ""
+            return True, self._last_response
+        except Exception as ex:
+            self._last_ping_at = time.time()
+            self._last_ping_ok = False
+            self._last_error = str(ex)
+            return False, self._last_error
+
+    def reconnect(self) -> tuple[bool, str]:
+        if not self._loop:
+            self.start()
+        assert self._loop is not None and self._session is not None
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.reconnect(),
+            self._loop,
+        )
+        try:
+            future.result(timeout=15.0)
+            self._last_error = ""
+            return True, "reconnected"
+        except Exception as ex:
+            self._last_error = str(ex)
+            return False, str(ex)
+
     def status(self) -> dict:
         connected = False
         if self._session and self._session._client:
@@ -229,6 +269,8 @@ class BleWorker:
             "last_response": self._last_response,
             "last_error": self._last_error,
             "device_alias": self.device_alias,
+            "last_ping_at": self._last_ping_at,
+            "last_ping_ok": self._last_ping_ok,
         }
 
     def stop(self) -> None:
