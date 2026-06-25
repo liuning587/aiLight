@@ -169,13 +169,19 @@ class BleWorker:
         self._loop.run_forever()
 
     def scan(
-        self, timeout: float = 8.0, show_all: bool = False
+        self,
+        timeout: float = 8.0,
+        show_all: bool = False,
+        *,
+        reconnect: bool = True,
     ) -> tuple[bool, list[dict] | str]:
         if not self._loop:
             self.start()
         assert self._loop is not None and self._session is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._session.scan_nearby(timeout=timeout, show_all=show_all),
+            self._session.scan_nearby(
+                timeout=timeout, show_all=show_all, reconnect=reconnect
+            ),
             self._loop,
         )
         try:
@@ -184,6 +190,13 @@ class BleWorker:
         except Exception as ex:
             self._last_error = str(ex)
             return False, str(ex)
+
+    def reconnect_async(self) -> None:
+        """Reconnect in the background (e.g. after a scan that dropped the link)."""
+        if not self._loop:
+            self.start()
+        assert self._loop is not None and self._session is not None
+        asyncio.run_coroutine_threadsafe(self._session.reconnect(), self._loop)
 
     def switch_device(self, alias: str) -> tuple[bool, str]:
         if not self._loop:

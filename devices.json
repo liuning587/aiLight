@@ -2,20 +2,6 @@
   "default_timeout": 8.0,
   "default_device": "ailight-bd92-bd92",
   "devices": {
-    "ailight-b46a-b46a": {
-      "name": "aiLight-B46A",
-      "name_prefix": "aiLight",
-      "address": "7C:4F:AD:CF:B4:6A",
-      "timeout": 8.0,
-      "bound_at": "2026-06-24T13:33:00.112133+00:00"
-    },
-    "ailight-5f9a-5f9a": {
-      "name": "aiLight-5F9A",
-      "name_prefix": "aiLight",
-      "address": "90:64:9B:ED:5F:9A",
-      "timeout": 8.0,
-      "bound_at": "2026-06-24T13:34:17.416298+00:00"
-    },
     "ailight-bd92-bd92": {
       "name": "aiLight-BD92",
       "name_prefix": "aiLight",

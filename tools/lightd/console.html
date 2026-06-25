@@ -600,7 +600,7 @@
       scanning = true;
       const btn = document.getElementById('scanBtn');
       btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>正在扫描（约 8 秒）…';
+      btn.innerHTML = '<span class="spinner"></span>正在扫描（约 8–15 秒，请勿关闭页面）…';
       document.getElementById('scanEmpty').style.display = 'none';
       try {
         const res = await api('/api/devices/scan', {

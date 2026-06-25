@@ -424,8 +424,9 @@ class Daemon:
     def scan_devices(self, timeout: float = 8.0, show_all: bool = False) -> dict:
         if self.dry_run:
             return {"ok": True, "devices": []}
-        ok, result = self.ble.scan(timeout=timeout, show_all=show_all)
+        ok, result = self.ble.scan(timeout=timeout, show_all=show_all, reconnect=False)
         if not ok:
+            self.ble.reconnect_async()
             return {"ok": False, "error": result, "devices": []}
         cfg = load_devices_config(self.devices_config)
         devices = cfg.get("devices") if isinstance(cfg.get("devices"), dict) else {}
@@ -436,6 +437,7 @@ class Daemon:
         }
         for row in result:
             row["already_bound"] = row["address"].upper() in bound
+        self.ble.reconnect_async()
         return {"ok": True, "devices": result}
 
     def bind_and_use(
@@ -578,10 +580,19 @@ class Daemon:
                 self.ble.reconnect()
 
 
+_CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 def make_handler(daemon: Daemon):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             return
+
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except _CLIENT_GONE:
+                pass
 
         def _json(self, code: int, payload: dict) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")

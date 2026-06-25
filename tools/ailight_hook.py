@@ -3,7 +3,7 @@
 aiLight hook -> lightd daemon (Cursor + TRAE IDE).
 
 Forwards lifecycle events to lightd HTTP API (host/port from .cursor/ailight.json or config.json).
-Falls back to direct BLE if daemon is unavailable.
+Falls back to direct BLE if daemon is unavailable (sync mode only).
 """
 
 from __future__ import annotations
@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -19,10 +21,10 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from tools.light_client import send_command  # noqa: E402
-from tools.lightd.channels import prefix_ble_command, resolve_channel  # noqa: E402
-
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "config.json")
+_HOOK_SCRIPT = os.path.abspath(__file__)
+
+_CFG: dict | None = None
 
 TRAE_HOOK_EVENTS = frozenset(
     {
@@ -73,6 +75,26 @@ def _load_json(path: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _init_cfg() -> dict:
+    global _CFG
+    if _CFG is None:
+        hook_path = _hook_config_path()
+        _CFG = {
+            "hook_path": hook_path,
+            "hook": _load_json(hook_path),
+            "config": _load_json(CONFIG_PATH),
+        }
+    return _CFG
+
+
+def _hook_cfg() -> dict:
+    return _init_cfg()["hook"]
+
+
+def _main_cfg() -> dict:
+    return _init_cfg()["config"]
+
+
 def _hook_config_path() -> str:
     for rel in (".trae/ailight.json", ".cursor/ailight.json"):
         path = os.path.join(PROJECT_ROOT, rel)
@@ -94,8 +116,8 @@ def _detect_ide(stdin_payload: dict | None = None) -> str:
 
 
 def _daemon_base_url() -> str:
-    hook_cfg = _load_json(_hook_config_path())
-    cfg = _load_json(CONFIG_PATH)
+    hook_cfg = _hook_cfg()
+    cfg = _main_cfg()
     port = int(hook_cfg.get("daemon_port") or cfg.get("web_port") or 7801)
     host = hook_cfg.get("daemon_host") or "127.0.0.1"
     return f"http://{host}:{port}"
@@ -110,12 +132,16 @@ def _daemon_command_url() -> str:
 
 
 def _is_enabled() -> bool:
-    return bool(_load_json(_hook_config_path()).get("enabled", True))
+    return bool(_hook_cfg().get("enabled", True))
+
+
+def _is_async_events() -> bool:
+    return bool(_hook_cfg().get("async_events", True))
 
 
 def _api_token() -> str:
-    hook_cfg = _load_json(_hook_config_path())
-    cfg = _load_json(CONFIG_PATH)
+    hook_cfg = _hook_cfg()
+    cfg = _main_cfg()
     env_token = os.environ.get("AILIGHT_API_TOKEN", "").strip()
     return str(
         hook_cfg.get("api_token") or env_token or cfg.get("api_token") or ""
@@ -178,18 +204,76 @@ def _emit_response(
 
 
 def _client_id() -> str:
-    hook_cfg = _load_json(_hook_config_path())
+    hook_cfg = _hook_cfg()
     env_id = os.environ.get("AILIGHT_CLIENT_ID", "").strip()
     return str(hook_cfg.get("client_id") or env_id or "").strip()
 
 
-def _post_daemon(event: str, session_id: str | None = None) -> tuple[bool, str]:
-    body_obj: dict = {"event": event}
+def _event_body(event: str, session_id: str | None = None) -> dict:
+    body_obj: dict = {"event": event, "source": "hook"}
     if session_id:
         body_obj["session_id"] = session_id
     cid = _client_id()
     if cid:
         body_obj["client_id"] = cid
+    return body_obj
+
+
+def _spawn_async_post(body_obj: dict) -> None:
+    """Fire-and-forget POST so the hook can exit before lightd responds."""
+    payload = {
+        "url": _daemon_url(),
+        "body": body_obj,
+        "headers": _daemon_headers(),
+    }
+    fd, path = tempfile.mkstemp(prefix="ailight-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        cmd = [sys.executable, _HOOK_SCRIPT, "__async_post__", path]
+        kwargs: dict = {
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if sys.platform == "win32":
+            kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+            )
+        subprocess.Popen(cmd, **kwargs)
+    except OSError:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _async_post_worker(payload_path: str) -> int:
+    try:
+        with open(payload_path, encoding="utf-8") as f:
+            payload = json.load(f)
+        body = json.dumps(payload["body"], ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            payload["url"],
+            data=body,
+            headers=payload.get("headers") or {},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8.0):
+            pass
+    except Exception:
+        pass
+    finally:
+        try:
+            os.unlink(payload_path)
+        except OSError:
+            pass
+    return 0
+
+
+def _post_daemon(event: str, session_id: str | None = None) -> tuple[bool, str]:
+    body_obj = _event_body(event, session_id=session_id)
     body = json.dumps(body_obj).encode("utf-8")
     req = urllib.request.Request(
         _daemon_url(),
@@ -247,8 +331,11 @@ def _post_daemon_command(
 
 
 def _fallback_ble(event: str) -> tuple[bool, str]:
-    hook_cfg = _load_json(_hook_config_path())
-    cfg = _load_json(CONFIG_PATH)
+    from tools.light_client import send_command
+    from tools.lightd.channels import prefix_ble_command, resolve_channel
+
+    hook_cfg = _hook_cfg()
+    cfg = _main_cfg()
     commands = cfg.get("state_commands") or hook_cfg.get("commands") or {}
     phase_map = {
         "session_start": "idle",
@@ -280,6 +367,11 @@ def _dispatch(
     trae_event: str | None = None,
     session_id: str | None = None,
 ) -> int:
+    if _is_async_events():
+        _spawn_async_post(_event_body(event, session_id=session_id))
+        _emit_response(ide, trae_event)
+        return 0
+
     ok, msg = _post_daemon(event, session_id=session_id)
     if not ok:
         if "unauthorized" in msg.lower():
@@ -414,6 +506,8 @@ def _handle_prompt(payload: dict) -> int:
     prompt = _extract_prompt(payload)
     manual = _parse_manual_command(prompt)
     if manual:
+        from tools.light_client import send_command
+
         alias = _parse_device_from_prompt(prompt)
         ok, out = _post_daemon_command(manual, device_alias=alias)
         if not ok:
@@ -490,6 +584,11 @@ def _handle_test() -> int:
 
 def main() -> int:
     action = (sys.argv[1] if len(sys.argv) > 1 else "").strip()
+    if action == "__async_post__":
+        if len(sys.argv) < 3:
+            return 1
+        return _async_post_worker(sys.argv[2])
+    _init_cfg()
     if action == "test":
         return _handle_test()
     if not _is_enabled():

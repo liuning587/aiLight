@@ -1,5 +1,6 @@
 {
   "enabled": true,
+  "async_events": true,
   "client_id": "slot-a",
   "default_device": "ailight-bd92-bd92",
   "devices_config": "devices.json",
